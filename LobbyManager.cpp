@@ -9,12 +9,18 @@ LobbyManager::LobbyManager(firebase::database::Database* database) : db(database
     
     // Wire up the internal listener to the public callback
     listener.onUpdate = [this](const firebase::database::DataSnapshot& snapshot) {
-        if (!snapshot.exists()) return;
+        if (!snapshot.exists()) {
+            LobbyData deletedData;
+            deletedData.status = "deleted"; // Signal that the host closed the room
+            if (onLobbyUpdated) onLobbyUpdated(deletedData);
+            return;
+        }
 
         LobbyData data;
         data.code = currentLobbyCode;
         data.status = snapshot.Child("status").value().string_value();
         data.isPrivate = snapshot.Child("is_private").value().bool_value();
+        data.hostName = snapshot.Child("host_name").value().string_value();
         
         auto playersSnap = snapshot.Child("players");
         for (auto& child : playersSnap.children()) {
@@ -57,11 +63,10 @@ void LobbyManager::createLobby(const std::string& playerName, bool isPrivate) {
 
     currentLobbyRef.SetValue(lobbyInit).OnCompletion([this, playerName](const firebase::Future<void>&) {
         // After creating, join yourself to the players list
-        firebase::database::DatabaseReference p1 = currentLobbyRef.Child("players").PushChild();
-        std::map<std::string, firebase::Variant> pData;
+        myPlayerRef = currentLobbyRef.Child("players").PushChild();        std::map<std::string, firebase::Variant> pData;
         pData["name"] = playerName;
         pData["is_bot"] = false;
-        p1.SetValue(pData);
+        myPlayerRef.SetValue(pData);
 
         currentLobbyRef.AddValueListener(&listener);
         std::cout << "Lobby created! Code: " << currentLobbyCode << "\n";
@@ -75,12 +80,11 @@ void LobbyManager::joinLobby(const std::string& code, const std::string& playerN
     currentLobbyRef = db->GetReference("lobbies").Child(code);
 
     // Add self to players list
-    firebase::database::DatabaseReference selfRef = currentLobbyRef.Child("players").PushChild();
-    std::map<std::string, firebase::Variant> pData;
+    myPlayerRef = currentLobbyRef.Child("players").PushChild();    std::map<std::string, firebase::Variant> pData;
     pData["name"] = playerName;
     pData["is_bot"] = false;
     
-    selfRef.SetValue(pData).OnCompletion([this](const firebase::Future<void>&) {
+    myPlayerRef.SetValue(pData).OnCompletion([this](const firebase::Future<void>&) {
         currentLobbyRef.AddValueListener(&listener);
         std::cout << "Joined lobby " << currentLobbyCode << " successfully.\n";
     });
@@ -188,4 +192,29 @@ void LobbyManager::syncTurnState(const Match& match) {
     state["topCard"] = match.getTopCard().toString();
     
     currentLobbyRef.Child("game_state").UpdateChildren(state);
+}
+
+void LobbyManager::leaveLobby() {
+    if (isHost && currentLobbyRef.is_valid()) {
+        currentLobbyRef.RemoveValue(); // Destroys the whole lobby
+    } else if (myPlayerRef.is_valid()) {
+        myPlayerRef.RemoveValue();     // Removes just the guest
+    }
+    currentLobbyCode = "";
+}
+
+void LobbyManager::kickPlayer(const std::string& targetName) {
+    if (!isHost || !currentLobbyRef.is_valid()) return;
+    
+    // Find the player by name and remove their node
+    currentLobbyRef.Child("players").GetValue().OnCompletion([this, targetName](const firebase::Future<firebase::database::DataSnapshot>& done) {
+        if (done.error() == 0 && done.result()->exists()) {
+            for (auto& child : done.result()->children()) {
+                if (child.Child("name").value().string_value() == targetName) {
+                    currentLobbyRef.Child("players").Child(child.key()).RemoveValue();
+                    break;
+                }
+            }
+        }
+    });
 }

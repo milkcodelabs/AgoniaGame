@@ -15,6 +15,7 @@ struct LobbyData {
     std::string code;
     std::string hostId;
     std::string status; // "waiting" or "playing"
+    std::string hostName;
     bool isPrivate;
     std::vector<PlayerInfo> players;
 };
@@ -23,6 +24,7 @@ class LobbyManager {
 private:
     firebase::database::Database* db;
     firebase::database::DatabaseReference currentLobbyRef;
+    firebase::database::DatabaseReference myPlayerRef;
     std::string currentLobbyCode;
     std::string localPlayerName;
     bool isHost = false;
@@ -80,7 +82,9 @@ public:
     void syncInitialMatch(Match& match); 
     void pushMove(int playerIndex, std::string type, int cardIndex = -1, std::string declaredSuit = "");
     void listenForMoves(std::function<void(int, std::string, int, std::string)> onMoveReceived);
-        
+    void leaveLobby();
+    void kickPlayer(const std::string& targetName);
+
     bool isLocalHost() const { return isHost; }
     std::string getCode() const { return currentLobbyCode; }
     void syncTurnState(const Match& match);

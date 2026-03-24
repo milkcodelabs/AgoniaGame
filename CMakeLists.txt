@@ -9,8 +9,10 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # This matches the Firebase SDK and fixes the massive flood of LNK2001 errors
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 
-# 2. Vcpkg Libraries
-find_package(SFML COMPONENTS Graphics Window System REQUIRED)
+# 2. Vcpkg Libraries (Replaced SFML with SDL2 ecosystem)
+find_package(SDL2 CONFIG REQUIRED)
+find_package(SDL2_image CONFIG REQUIRED)
+find_package(SDL2_ttf CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
 
 # 3. Firebase C++ SDK Setup (Correct Path)
@@ -28,6 +30,7 @@ set(SOURCES
     AIBot.cpp
     FirebaseFix.cpp
     LobbyManager.cpp
+    GameWindow.cpp
 )
 
 # 5. Create the executable
@@ -44,9 +47,12 @@ set_target_properties(${PROJECT_NAME} PROPERTIES
 
 # 6. Link the libraries
 target_link_libraries(${PROJECT_NAME} PRIVATE 
-    SFML::Graphics
-    SFML::Window
-    SFML::System
+    # --- SDL2 Libraries ---
+    SDL2::SDL2main
+    SDL2::SDL2
+    SDL2_image::SDL2_image
+    SDL2_ttf::SDL2_ttf
+    # --- JSON ---
     nlohmann_json::nlohmann_json
     # --- Required Windows System Networking Libs for Firebase ---
     ws2_32
