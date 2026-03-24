@@ -22,7 +22,6 @@ CMakeSettings.json
 *.lib
 
 # Executables
-*.exe
 *.out
 *.app
 
