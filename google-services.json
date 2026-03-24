@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "553280452101",
+    "project_id": "agoniagame",
+    "storage_bucket": "agoniagame.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:553280452101:android:9f3251b8b14ec5b476ce6c",
+        "android_client_info": {
+          "package_name": "com.agonia.game"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyB6Htx5s6xBhEoLC_BjrRH_nspCEMaRBNY"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
