@@ -9,12 +9,14 @@ GameWindow::GameWindow(const std::string& title, int width, int height) {
     needsSuitSelection = false;
     currentTextInput = "";
     selectedCardIndex = -1;
+    isLoadingNextRound = false; 
 }
 
 GameWindow::~GameWindow() {
     if (font) TTF_CloseFont(font);
     if (renderer) SDL_DestroyRenderer(renderer);
     if (window) SDL_DestroyWindow(window);
+    Mix_CloseAudio();
     TTF_Quit();
     SDL_Quit();
 }
@@ -34,6 +36,11 @@ bool GameWindow::init() {
     font = TTF_OpenFont("arial.ttf", 36); 
     if (!font) {
         std::cerr << "Warning: Failed to load arial.ttf.\n";
+    }
+    // --- AUDIO INITIALIZATION ---
+    // 44100Hz frequency, standard format, 2 channels (stereo), 2048 chunk size
+    if (Mix_OpenAudio(44100, MIX_DEFAULT_FORMAT, 2, 2048) < 0) {
+        std::cerr << "Warning: SDL_mixer could not initialize! Error: " << Mix_GetError() << "\n";
     }
 
     SDL_StartTextInput();
@@ -55,7 +62,6 @@ void GameWindow::processInput(AppState& state, Match* match, int myIndex) {
                     currentTextInput.pop_back();
                 } else if (event.key.keysym.sym == SDLK_RETURN && currentTextInput.length() > 0) {
                     if (state == AppState::NAME_INPUT && onNameEntered) {
-                        // Change the Window Title dynamically!
                         std::string newTitle = "Agonia user:" + currentTextInput;
                         SDL_SetWindowTitle(window, newTitle.c_str());
                         
@@ -92,12 +98,11 @@ void GameWindow::processInput(AppState& state, Match* match, int myIndex) {
                 }
             }
 
-            // 2. Play Area Logic (Only active on your turn)
+            // 2. Play Area Logic
             if (!actionHandled && state == AppState::PLAYING && match && !needsSuitSelection) {
                 bool isMyTurn = (match->getCurrentPlayerIndex() == myIndex);
                 
                 if (isMyTurn) {
-                    // Did they click the Discard Pile to play the selected card?
                     SDL_Rect pileRect = { LOGICAL_WIDTH / 2 - 75, LOGICAL_HEIGHT / 2 - 100, 150, 200 };
                     if (SDL_PointInRect(&clickPoint, &pileRect) && selectedCardIndex != -1) {
                         if (onCardPlayed) onCardPlayed(selectedCardIndex);
@@ -105,9 +110,8 @@ void GameWindow::processInput(AppState& state, Match* match, int myIndex) {
                         actionHandled = true;
                     }
 
-                    // Did they click a card in their hand?
                     if (!actionHandled) {
-                        // FIX: Loop backward so the visually "top" cards are clicked first!
+                        // Loop backward so visually top cards are clicked first
                         for (int i = (int)handHitboxes.size() - 1; i >= 0; --i) {
                             if (SDL_PointInRect(&clickPoint, &handHitboxes[i])) {
                                 if (selectedCardIndex == i) {
@@ -126,7 +130,7 @@ void GameWindow::processInput(AppState& state, Match* match, int myIndex) {
     }
 }
 
-void GameWindow::render(AppState state, Match* match, int myIndex, const std::string& lobbyCode, const std::vector<PlayerInfo>& lobbyPlayers, const std::vector<PublicLobbyInfo>& publicLobbies, const std::string& hostName) {
+void GameWindow::render(AppState state, Match* match, int myIndex, const std::string& myName, const std::string& lobbyCode, const std::vector<PlayerInfo>& lobbyPlayers, const std::vector<PublicLobbyInfo>& publicLobbies, const std::string& hostName, int targetScore, bool sortBySuit) {
     SDL_SetRenderDrawColor(renderer, 35, 107, 43, 255); 
     SDL_RenderClear(renderer);
 
@@ -180,22 +184,21 @@ void GameWindow::render(AppState state, Match* match, int myIndex, const std::st
         SDL_RenderFillRect(renderer, &inputBox);
         renderText(currentTextInput + "_", LOGICAL_WIDTH/2 - 80, LOGICAL_HEIGHT/2 + 10, black);
         
-        // Added Back Button
         activeButtons.push_back({ {LOGICAL_WIDTH/2 - 100, LOGICAL_HEIGHT/2 + 150, 200, 60}, "Back", darkGray, [this]() { if(onMenuOptionSelected) onMenuOptionSelected(-1); } });
     }
     else if (state == AppState::LOBBY) {
+        bool isHost = (myName == hostName); 
         renderText("--- LOBBY [" + lobbyCode + "] ---", LOGICAL_WIDTH/2 - 180, 100, white);
-        int yOffset = 200;
         
+        int yOffset = 200;
         for (const auto& p : lobbyPlayers) {
             std::string label = "- " + p.name;
-            if (p.name == hostName) label += "<host>"; // Add a Star symbol for the host
+            if (p.name == hostName) label += "<host>"; // Star symbol
             if (p.isBot) label += " (BOT)";
             
             renderText(label, LOGICAL_WIDTH/2 - 150, yOffset, white);
             
-            // If we are the host (StartGame is bound) and this isn't us, draw a Kick button
-            if (onStartGameClicked && p.name != hostName) {
+            if (isHost && p.name != hostName) {
                 std::string target = p.name;
                 activeButtons.push_back({ {LOGICAL_WIDTH/2 + 200, yOffset - 5, 80, 40}, "Kick", red, [this, target]() { 
                     if(onKickPlayerClicked) onKickPlayerClicked(target); 
@@ -204,10 +207,12 @@ void GameWindow::render(AppState state, Match* match, int myIndex, const std::st
             yOffset += 50;
         }
 
-        if (onStartGameClicked) {
-            activeButtons.push_back({ {LOGICAL_WIDTH/2 - 220, LOGICAL_HEIGHT - 200, 200, 60}, "Fill Bots", darkGray, onFillBotsClicked });
-            activeButtons.push_back({ {LOGICAL_WIDTH/2 + 20, LOGICAL_HEIGHT - 200, 200, 60}, "Start Game", blue, onStartGameClicked });
+        if (isHost) {
+            activeButtons.push_back({ {LOGICAL_WIDTH/2 - 330, LOGICAL_HEIGHT - 200, 200, 60}, "Target: " + std::to_string(targetScore), darkGray, onToggleScoreClicked });
+            activeButtons.push_back({ {LOGICAL_WIDTH/2 - 100, LOGICAL_HEIGHT - 200, 200, 60}, "Fill Bots", darkGray, onFillBotsClicked });
+            activeButtons.push_back({ {LOGICAL_WIDTH/2 + 130, LOGICAL_HEIGHT - 200, 200, 60}, "Start Game", blue, onStartGameClicked });
         } else {
+            renderText("Target Score: " + std::to_string(targetScore), LOGICAL_WIDTH/2 - 120, LOGICAL_HEIGHT - 260, white);
             renderText("Waiting for host to start...", LOGICAL_WIDTH/2 - 190, LOGICAL_HEIGHT - 200, white);
         }
         
@@ -216,13 +221,11 @@ void GameWindow::render(AppState state, Match* match, int myIndex, const std::st
     else if (state == AppState::PLAYING && match) {
         bool isMyTurn = (match->getCurrentPlayerIndex() == myIndex);
 
-        // --- RE-ADDED TOP LEFT TURN INDICATOR ---
         if (match->getCurrentPlayerIndex() < match->getPlayers().size()) {
             std::string currentPlayerName = match->getPlayers()[match->getCurrentPlayerIndex()].getName();
             renderText("Current Turn: " + currentPlayerName, 50, 50, white);
         }
 
-        // Top Card (Discard Pile)
         Card topCard = match->getTopCard();
         renderCard(topCard, LOGICAL_WIDTH / 2 - 75, LOGICAL_HEIGHT / 2 - 100, 150, 200);
 
@@ -239,7 +242,10 @@ void GameWindow::render(AppState state, Match* match, int myIndex, const std::st
         activeButtons.push_back({ {LOGICAL_WIDTH/2 - 300, LOGICAL_HEIGHT/2 - 100, 150, 200}, "DECK", {100, 20, 20, 255}, onDrawClicked });
         activeButtons.push_back({ {LOGICAL_WIDTH/2 + 150, LOGICAL_HEIGHT/2 - 20, 120, 60}, "PASS", darkGray, onPassClicked });
 
-        // Render *my* hand securely using myIndex
+        // Sorting Toggle Button
+        activeButtons.push_back({ {LOGICAL_WIDTH - 200, LOGICAL_HEIGHT - 100, 150, 60}, sortBySuit ? "Sort: Suit" : "Sort: Value", darkGray, onSortClicked });
+
+        // Render Local Hand
         if (myIndex >= 0 && myIndex < match->getPlayers().size()) {
             const auto& hand = match->getPlayers()[myIndex].getHand();
             int cardWidth = 120, cardHeight = 180, spacing = 60;
@@ -249,14 +255,14 @@ void GameWindow::render(AppState state, Match* match, int myIndex, const std::st
             for (size_t i = 0; i < hand.size(); ++i) {
                 int drawY = baseY;
                 bool isSelected = (i == selectedCardIndex);
-                if (isSelected && isMyTurn) drawY -= 30; // Pop out the selected card
+                if (isSelected && isMyTurn) drawY -= 30; 
 
                 renderCard(hand[i], startX + (int)(i * spacing), drawY, cardWidth, cardHeight, false, isSelected, !isMyTurn);
                 handHitboxes.push_back({ startX + (int)(i * spacing), drawY, cardWidth, cardHeight });
             }
         }
 
-        // --- DRAW OPPONENTS' HANDS ---
+        // Render Opponents
         int numPlayers = match->getPlayers().size();
         for (int i = 0; i < numPlayers; ++i) {
             if (i == myIndex) continue;
@@ -277,7 +283,7 @@ void GameWindow::render(AppState state, Match* match, int myIndex, const std::st
                 for (int c = 0; c < cardCount; ++c) {
                     renderCardBack(startX + (c * spacing), 50, cW, cH, false);
                 }
-                renderText("Player " + std::to_string(i), startX, 20, white);
+                renderText(match->getPlayers()[i].getName(), startX, 20, white);
             } 
             else if (isLeft) {
                 int totalHeight = cardCount * spacing + (cW - spacing);
@@ -285,7 +291,7 @@ void GameWindow::render(AppState state, Match* match, int myIndex, const std::st
                 for (int c = 0; c < cardCount; ++c) {
                     renderCardBack(50, startY + (c * spacing), cH, cW, true); 
                 }
-                renderText("P" + std::to_string(i), 50, startY - 40, white);
+                renderText(match->getPlayers()[i].getName(), 50, startY - 40, white);
             } 
             else if (isRight) {
                 int totalHeight = cardCount * spacing + (cW - spacing);
@@ -293,11 +299,10 @@ void GameWindow::render(AppState state, Match* match, int myIndex, const std::st
                 for (int c = 0; c < cardCount; ++c) {
                     renderCardBack(LOGICAL_WIDTH - cH - 50, startY + (c * spacing), cH, cW, true);
                 }
-                renderText("P" + std::to_string(i), LOGICAL_WIDTH - cH - 50, startY - 40, white);
+                renderText(match->getPlayers()[i].getName(), LOGICAL_WIDTH - cH - 50, startY - 40, white);
             }
         }
 
-        // Suit Selection Overlay
         if (needsSuitSelection) {
             SDL_Rect overlay = {0, 0, LOGICAL_WIDTH, LOGICAL_HEIGHT};
             SDL_SetRenderDrawColor(renderer, 0, 0, 0, 200);
@@ -314,13 +319,42 @@ void GameWindow::render(AppState state, Match* match, int myIndex, const std::st
             activeButtons.push_back({ {LOGICAL_WIDTH/2 + 20, LOGICAL_HEIGHT/2 + 50, 200, 80}, "C Clubs", darkGray, [=](){pickSuit("Clubs");} });
         }
     }
-    else if (state == AppState::GAME_OVER) {
-        renderText("MATCH OVER", LOGICAL_WIDTH/2 - 110, LOGICAL_HEIGHT/2 - 100, white);
+    else if (state == AppState::GAME_OVER && match) {
+        bool tournamentOver = false;
+        for (const Player& p : match->getPlayers()) {
+            if (p.getScore() >= targetScore) tournamentOver = true;
+        }
+
+        if (tournamentOver) {
+            renderText("--- TOURNAMENT OVER ---", LOGICAL_WIDTH/2 - 200, 100, red);
+        } else {
+            renderText("--- ROUND OVER ---", LOGICAL_WIDTH/2 - 150, 100, white);
+        }
+        
+        int yOff = 200;
+        for (const Player& p : match->getPlayers()) {
+            renderText(p.getName() + " : " + std::to_string(p.getScore()) + " Points", LOGICAL_WIDTH/2 - 120, yOff, white);
+            yOff += 60;
+        }
+
+        if (tournamentOver) {
+            activeButtons.push_back({ {LOGICAL_WIDTH/2 - 150, LOGICAL_HEIGHT - 200, 300, 80}, "Return to Menu", darkGray, [this]() { if(onMenuOptionSelected) onMenuOptionSelected(-1); } });
+        } else {
+            bool isHost = (myName == hostName);
+            if (isHost) {
+                if (isLoadingNextRound) {
+                    renderText("Loading next round...", LOGICAL_WIDTH/2 - 180, LOGICAL_HEIGHT - 160, white);
+                } else {
+                    activeButtons.push_back({ {LOGICAL_WIDTH/2 - 150, LOGICAL_HEIGHT - 200, 300, 80}, "Start Next Round", blue, [this]() { if(onNextRoundClicked) onNextRoundClicked(); }});
+                }
+            } else {
+                renderText("Waiting for Host to start next round...", LOGICAL_WIDTH/2 - 250, LOGICAL_HEIGHT - 200, white);
+            }
+        }
     }
 
     for (const auto& btn : activeButtons) renderButton(btn);
 
-    // --- NOTIFICATION SYSTEM ---
     if (notificationTimeout > SDL_GetTicks()) {
         SDL_Rect notifRect = { LOGICAL_WIDTH / 2 - 300, 150, 600, 60 };
         SDL_SetRenderDrawColor(renderer, 200, 50, 50, 230);

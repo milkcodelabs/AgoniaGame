@@ -13,7 +13,9 @@ set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 find_package(SDL2 CONFIG REQUIRED)
 find_package(SDL2_image CONFIG REQUIRED)
 find_package(SDL2_ttf CONFIG REQUIRED)
+find_package(SDL2_mixer CONFIG REQUIRED)
 find_package(nlohmann_json CONFIG REQUIRED)
+
 
 # 3. Firebase C++ SDK Setup (Correct Path)
 set(FIREBASE_CPP_SDK_DIR "C:/dev/firebase_cpp_sdk")
@@ -52,6 +54,7 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     SDL2::SDL2
     SDL2_image::SDL2_image
     SDL2_ttf::SDL2_ttf
+    SDL2_mixer::SDL2_mixer
     # --- JSON ---
     nlohmann_json::nlohmann_json
     # --- Required Windows System Networking Libs for Firebase ---

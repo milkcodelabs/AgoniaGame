@@ -2,9 +2,10 @@
 #include <memory>
 #include <map>
 #include <vector>
-#include <SDL.h> 
 #include <thread>
+#include <mutex>
 #include <chrono>
+#include <SDL.h> 
 
 #include "firebase/app.h"
 #include "firebase/database.h"
@@ -15,19 +16,26 @@
 #include "LobbyManager.h"
 #include "GameWindow.h" 
 
+// --- THREAD SAFETY DISPATCHER ---
+std::mutex queueMutex;
+std::vector<std::function<void()>> taskQueue;
+
+void runOnMainThread(std::function<void()> task) {
+    std::lock_guard<std::mutex> lock(queueMutex);
+    taskQueue.push_back(task);
+}
+
 int main(int argc, char* argv[]) {
     std::cout << "Starting Agonia UI Engine...\n";
-
     std::cout << "Initializing Firebase...\n";
 
     // 1. Manually configure the options instead of reading the JSON file
     firebase::AppOptions options;
-    options.set_app_id("1:553280452101:android:9f3251b8b14ec5b476ce6c"); // YOUR "mobilesdk_app_id"
-    options.set_api_key("AIzaSyB6Htx5s6xBhEoLC_BjrRH_nspCEMaRBNY");     // YOUR "current_key"
-    options.set_project_id("agoniagame");                 // YOUR "project_id"
+    options.set_app_id("1:553280452101:android:9f3251b8b14ec5b476ce6c"); 
+    options.set_api_key("AIzaSyB6Htx5s6xBhEoLC_BjrRH_nspCEMaRBNY");     
+    options.set_project_id("agoniagame");                 
     options.set_database_url("https://agoniagame-default-rtdb.europe-west1.firebasedatabase.app/");
 
-    // 2. Create the app using those options
     firebase::App* app = firebase::App::Create(options);
 
     if (!app) {
@@ -59,6 +67,8 @@ int main(int argc, char* argv[]) {
     std::vector<PublicLobbyInfo> publicLobbies; 
     
     int pendingCardIndex = -1; 
+    int currentTargetScore = 50;
+    bool sortBySuit = true;
     
     // Non-blocking timers
     Uint32 botTurnStartTime = 0; 
@@ -69,6 +79,30 @@ int main(int argc, char* argv[]) {
     bool isFillingBots = false;
 
     // --- 4. UI CALLBACK BINDINGS ---
+    window.onToggleScoreClicked = [&]() {
+        lobbyManager.setTargetScore(currentTargetScore == 50 ? 100 : 50);
+    };
+
+    window.onSortClicked = [&]() {
+        sortBySuit = !sortBySuit; 
+    };
+
+    window.onNextRoundClicked = [&]() {
+        // Only run if we aren't already loading!
+        if (lobbyManager.isLocalHost() && currentMatch && !window.isLoadingNextRound) {
+            window.isLoadingNextRound = true; // Lock the UI instantly
+            unsigned int newRoundSeed = static_cast<unsigned int>(std::time(nullptr) + rand()); 
+
+            // THE FIX: Flush the massive moves list from Firebase first to prevent lag!
+            auto movesRef = database->GetReference("lobbies").Child(lobbyManager.getCode()).Child("game_state").Child("moves");
+            
+            movesRef.RemoveValue().OnCompletion([&, newRoundSeed](const firebase::Future<void>&) {
+                // Once the database is clean, push the Restart command
+                lobbyManager.pushMove(myIndex, "RT", (int)newRoundSeed, "");
+            });
+        }
+    };
+
     window.onKickPlayerClicked = [&](std::string targetName) {
         lobbyManager.kickPlayer(targetName);
     };
@@ -89,15 +123,23 @@ int main(int argc, char* argv[]) {
             database->GetReference("lobbies").OrderByChild("status").EqualTo("waiting").GetValue()
             .OnCompletion([&](const firebase::Future<firebase::database::DataSnapshot>& done) {
                 if (done.error() == 0 && done.result()->exists()) {
+                    // Safe parsing on background thread
+                    std::vector<PublicLobbyInfo> tempLobbies;
                     for (auto& lobby : done.result()->children()) {
-                        if (!lobby.Child("is_private").value().bool_value()) {
+                        auto privVal = lobby.Child("is_private").value();
+                        if (privVal.is_bool() && !privVal.bool_value()) {
                             PublicLobbyInfo info;
                             info.code = lobby.key();
-                            info.hostName = lobby.Child("host_name").value().string_value();
+                            auto hName = lobby.Child("host_name").value();
+                            info.hostName = hName.is_string() ? hName.string_value() : "Unknown";
                             info.playerCount = (int)lobby.Child("players").children_count();
-                            publicLobbies.push_back(info);
+                            tempLobbies.push_back(info);
                         }
                     }
+                    // Dispatch back to main thread
+                    runOnMainThread([&, tempLobbies]() {
+                        publicLobbies = tempLobbies;
+                    });
                 }
             });
         }
@@ -119,15 +161,11 @@ int main(int argc, char* argv[]) {
     window.onFillBotsClicked = [&]() {
         if (currentLobbyPlayers.size() < 4 && !isFillingBots) {
             isFillingBots = true;
-            
-            // Pass the exact, real-time local count to bypass Firebase delays
             lobbyManager.fillWithBots(currentLobbyPlayers.size());
-            
-            // Unlock after 2 seconds to prevent spam
             std::thread([&]() { std::this_thread::sleep_for(std::chrono::seconds(2)); isFillingBots = false; }).detach();
         }
     };
-    
+
     window.onStartGameClicked = [&]() {
         lobbyManager.startGame();
     };
@@ -198,88 +236,132 @@ int main(int argc, char* argv[]) {
 
     // --- 5. NETWORK LISTENER & LOBBY SYNC ---
     
-    // THE BUG FIX: We store the network logic in a lambda, but DO NOT attach it to Firebase 
-    // until we actually have a valid game state and a valid currentLobbyRef.
     auto networkMoveHandler = [&](int pIdx, std::string type, int cIdx, std::string suit) {
-        if (!currentMatch || pIdx == myIndex) return;
-        if (lobbyManager.isLocalHost() && bots.count(pIdx) > 0) return; 
+        // Dispatch to Main Thread to prevent Race Conditions
+        runOnMainThread([&, pIdx, type, cIdx, suit]() {
+            if (!currentMatch) return;
 
-        std::cout << "\n[NETWORK] Received Move -> Player: " << pIdx << " | Type: " << type << "\n";
+            // 1. CATCH RESTART COMMAND FIRST (Everyone, including Host, must process this)
+            if (type == "RT") {
+                std::cout << "[SYSTEM] Starting next round with seed: " << cIdx << "\n";
+                currentMatch->resetForNextRound((unsigned int)cIdx);
+                
+                window.isLoadingNextRound = false;
+                currentState = AppState::PLAYING;
+                lastTurnIndex = -1; // Force timer reset
+                localHasDrawnThisTurn = false;
+                window.clearCardSelection();
+                return; 
+            }
 
-        if (type == "D" || type == "d") {
-            (currentMatch->getCardsToDraw() > 0) ? currentMatch->attemptDrawPenalty() : currentMatch->attemptDraw();
-        } else if (type == "P" || type == "p") {
-            currentMatch->attemptPass();
-        } else {
-            bool success = currentMatch->attemptPlayCard(cIdx, suit);
-            if (!success) std::cout << "[CRITICAL DESYNC] Remote move rejected by local rules!\n";
-        }
+            // 2. NOW ignore normal moves if we made them or if it's a bot we control
+            if (pIdx == myIndex || (lobbyManager.isLocalHost() && bots.count(pIdx) > 0)) return; 
+
+            std::cout << "\n[NETWORK] Received Move -> Player: " << pIdx << " | Type: " << type << "\n";
+
+            if (type == "D" || type == "d") {
+                (currentMatch->getCardsToDraw() > 0) ? currentMatch->attemptDrawPenalty() : currentMatch->attemptDraw();
+            } else if (type == "P" || type == "p") {
+                currentMatch->attemptPass();
+            } else {
+                bool success = currentMatch->attemptPlayCard(cIdx, suit);
+                if (!success) std::cout << "[CRITICAL DESYNC] Remote move rejected by local rules!\n";
+            }
+        });
     };
 
     lobbyManager.onLobbyUpdated = [&](const LobbyData& data) {
-        // Did the host delete the lobby?
-        if (data.status == "deleted") {
-            if (currentState == AppState::LOBBY || currentState == AppState::PLAYING) {
-                currentState = AppState::MAIN_MENU;
-                window.triggerNotification("The host closed the lobby.");
-            }
-            return;
-        }
-
-        currentLobbyPlayers = data.players; 
-        currentHostName = data.hostName;
-
-        // Am I still in the player list? (Handling being kicked)
-        if (currentState == AppState::LOBBY && !lobbyManager.isLocalHost()) {
-            bool amIHere = false;
-            for (const auto& p : data.players) { if (p.name == myName) amIHere = true; }
-            if (!amIHere) {
-                lobbyManager.leaveLobby();
-                currentState = AppState::MAIN_MENU;
-                window.triggerNotification("You were kicked from the lobby.");
+        // Dispatch to Main Thread
+        runOnMainThread([&, data]() {
+            if (data.status == "deleted") {
+                if (currentState == AppState::LOBBY || currentState == AppState::PLAYING) {
+                    lobbyManager.leaveLobby(); // Explicitly disconnect listeners
+                    currentMatch.reset();      // Wipe the game board from memory
+                    bots.clear();              // Destroy all local bots
+                    
+                    currentState = AppState::MAIN_MENU;
+                    window.triggerNotification("The host closed the lobby.");
+                }
                 return;
             }
-        }
 
-        if (currentState == AppState::LOBBY && data.status == "playing") {
-            std::cout << "Game started! Preparing match...\n";
-            
-            std::vector<std::string> playerNames;
-            for (int i = 0; i < data.players.size(); ++i) {
-                playerNames.push_back(data.players[i].name);
-                if (data.players[i].name == myName && !data.players[i].isBot) myIndex = i;
-                if (data.players[i].isBot) bots[i] = std::make_unique<AIBot>(i, Difficulty::INTERMEDIATE);
+            currentLobbyPlayers = data.players; 
+            currentHostName = data.hostName;
+            currentTargetScore = data.targetScore;
+
+            if (currentState == AppState::LOBBY && !lobbyManager.isLocalHost()) {
+                bool amIHere = false;
+                for (const auto& p : data.players) { if (p.name == myName) amIHere = true; }
+                if (!amIHere) {
+                    lobbyManager.leaveLobby();
+                    currentState = AppState::MAIN_MENU;
+                    window.triggerNotification("You were kicked from the lobby.");
+                    return;
+                }
             }
-            
-            currentMatch = std::make_unique<Match>(playerNames);
 
-            if (lobbyManager.isLocalHost()) {
-                currentMatch->getDeck().shuffle();
-                lobbyManager.syncInitialMatch(*currentMatch);
-                currentMatch->dealInitialCards();
-                
-                // ATTACH THE LISTENER SAFELY
-                lobbyManager.listenForMoves(networkMoveHandler);
-                currentState = AppState::PLAYING;
-            } else {
-                auto deckRef = database->GetReference("lobbies").Child(lobbyManager.getCode()).Child("game_state").Child("deck");
-                deckRef.GetValue().OnCompletion([&, networkMoveHandler](const firebase::Future<firebase::database::DataSnapshot>& future) {
-                    if (future.error() == 0 && future.result()->exists()) {
-                        std::vector<std::string> syncedDeck;
-                        int deckSize = (int)future.result()->children_count();
-                        for (int i = 0; i < deckSize; ++i) {
-                            syncedDeck.push_back(future.result()->Child(std::to_string(i)).value().string_value());
+            // MID-GAME DISCONNECT HANDLING
+            if (currentState == AppState::PLAYING) {
+                if (lobbyManager.isLocalHost()) {
+                    for (int i = 0; i < data.players.size(); ++i) {
+                        if (data.players[i].isBot && bots.count(i) == 0) {
+                            std::cout << "[SYSTEM] " << data.players[i].name << " disconnected. AI taking over.\n";
+                            bots[i] = std::make_unique<AIBot>(i, Difficulty::INTERMEDIATE);
+                            window.triggerNotification(data.players[i].name + " left. A bot took over!");
                         }
-                        currentMatch->getDeck().loadFromSerialized(syncedDeck);
-                        currentMatch->dealInitialCards();
-                        
-                        // ATTACH THE LISTENER SAFELY ONCE DECK IS LOADED
-                        lobbyManager.listenForMoves(networkMoveHandler);
-                        currentState = AppState::PLAYING; 
                     }
-                });
+                }
+                return; 
             }
-        }
+
+            if (currentState == AppState::LOBBY && data.status == "playing") {
+                std::cout << "Game started! Preparing match...\n";
+                
+                std::vector<std::string> playerNames;
+                for (int i = 0; i < data.players.size(); ++i) {
+                    playerNames.push_back(data.players[i].name);
+                    if (data.players[i].name == myName && !data.players[i].isBot) myIndex = i;
+                    if (data.players[i].isBot) bots[i] = std::make_unique<AIBot>(i, Difficulty::INTERMEDIATE);
+                }
+                
+                currentMatch = std::make_unique<Match>(playerNames);
+
+                if (lobbyManager.isLocalHost()) {
+                    // 1. Generate a starting seed for the match
+                    unsigned int initialSeed = static_cast<unsigned int>(std::time(nullptr));
+                    currentMatch->setSeed(initialSeed);
+                    
+                    // 2. Pass the seed into the shuffle function
+                    currentMatch->getDeck().shuffle(initialSeed);
+                    
+                    lobbyManager.syncInitialMatch(*currentMatch);
+                    currentMatch->dealInitialCards();
+                    
+                    lobbyManager.listenForMoves(networkMoveHandler);
+                    currentState = AppState::PLAYING;
+                } else {
+                    auto deckRef = database->GetReference("lobbies").Child(lobbyManager.getCode()).Child("game_state").Child("deck");
+                    deckRef.GetValue().OnCompletion([&, networkMoveHandler](const firebase::Future<firebase::database::DataSnapshot>& future) {
+                        if (future.error() == 0 && future.result()->exists()) {
+                            
+                            std::vector<std::string> syncedDeck;
+                            int deckSize = (int)future.result()->children_count();
+                            for (int i = 0; i < deckSize; ++i) {
+                                auto cardVal = future.result()->Child(std::to_string(i)).value();
+                                if(cardVal.is_string()) syncedDeck.push_back(cardVal.string_value());
+                            }
+                            
+                            runOnMainThread([&, syncedDeck, networkMoveHandler]() {
+                                currentMatch->getDeck().loadFromSerialized(syncedDeck);
+                                currentMatch->dealInitialCards();
+                                lobbyManager.listenForMoves(networkMoveHandler);
+                                currentState = AppState::PLAYING; 
+                            });
+                        }
+                    });
+                }
+            }
+        });
     };
 
 
@@ -287,6 +369,15 @@ int main(int argc, char* argv[]) {
     
     while (window.isRunning()) {
         Uint32 frameStart = SDL_GetTicks();
+
+        // --- Execute pending background tasks safely ---
+        {
+            std::lock_guard<std::mutex> lock(queueMutex);
+            for (auto& task : taskQueue) {
+                task();
+            }
+            taskQueue.clear();
+        }
 
         window.processInput(currentState, currentMatch.get(), myIndex);
 
@@ -298,8 +389,8 @@ int main(int argc, char* argv[]) {
                 lastTurnIndex = currentIdx;
                 turnStartTime = SDL_GetTicks(); 
                 botTimerStarted = false;        
-                window.clearCardSelection(); 
                 localHasDrawnThisTurn = false;
+                window.clearCardSelection(); 
             }
             
             if (lobbyManager.isLocalHost() && bots.count(currentIdx) > 0) {
@@ -327,9 +418,13 @@ int main(int argc, char* argv[]) {
             currentMatch->endMatchPointsCalc();
         }
 
-        // 3. Render State
-        window.render(currentState, currentMatch.get(), myIndex, lobbyManager.getCode(), currentLobbyPlayers, publicLobbies, currentHostName);
-        
+        // Keep the hand sorted every frame!
+        if (currentMatch && myIndex != -1) {
+            currentMatch->getPlayer(myIndex).sortHand(sortBySuit);
+        }
+
+        // 3. Render State (Make sure to pass the new variables!)
+        window.render(currentState, currentMatch.get(), myIndex, myName, lobbyManager.getCode(), currentLobbyPlayers, publicLobbies, currentHostName, currentTargetScore, sortBySuit);
         // 4. Cap at ~60 FPS
         Uint32 frameTime = SDL_GetTicks() - frameStart;
         if (frameTime < 16) {

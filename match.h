@@ -20,6 +20,7 @@ private:
     void safeDraw(Player& p);
     void reshuffleDiscardPile();
     void advanceTurn(int steps = 1);
+    unsigned int matchSeed = 0;
 
 public:
     Match(std::vector<std::string> playerNames);
@@ -46,4 +47,8 @@ public:
     const std::vector<Player>& getPlayers() const;
     
     void endMatchPointsCalc();
+    Player& getPlayer(int index) { return players[index]; }
+    // --- NEW: Post-Match Loop & Deterministic RNG ---
+    void setSeed(unsigned int seed) { matchSeed = seed; }
+    void resetForNextRound(unsigned int newSeed);
 };

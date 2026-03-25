@@ -9,7 +9,7 @@ private:
 public:
     Deck(); 
     
-    void shuffle();
+    void shuffle(unsigned int seed);
     Card drawCard();
     void addCards(const std::vector<Card>& newCards);
     bool isEmpty() const;

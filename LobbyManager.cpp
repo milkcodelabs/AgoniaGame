@@ -11,22 +11,44 @@ LobbyManager::LobbyManager(firebase::database::Database* database) : db(database
     listener.onUpdate = [this](const firebase::database::DataSnapshot& snapshot) {
         if (!snapshot.exists()) {
             LobbyData deletedData;
-            deletedData.status = "deleted"; // Signal that the host closed the room
+            deletedData.status = "deleted"; 
             if (onLobbyUpdated) onLobbyUpdated(deletedData);
             return;
         }
 
         LobbyData data;
         data.code = currentLobbyCode;
-        data.status = snapshot.Child("status").value().string_value();
-        data.isPrivate = snapshot.Child("is_private").value().bool_value();
-        data.hostName = snapshot.Child("host_name").value().string_value();
         
+        // --- THE FIX: Safe Parsing to prevent Null Variant Crashes ---
+        auto statusVal = snapshot.Child("status").value();
+        data.status = statusVal.is_string() ? statusVal.string_value() : "";
+        
+        // If status is empty, it means the lobby is a "Husk" (partially deleted). Treat as deleted.
+        if (data.status.empty()) {
+            LobbyData deletedData;
+            deletedData.status = "deleted";
+            if (onLobbyUpdated) onLobbyUpdated(deletedData);
+            return;
+        }
+
+        auto privVal = snapshot.Child("is_private").value();
+        data.isPrivate = privVal.is_bool() ? privVal.bool_value() : false;
+        
+        auto hostVal = snapshot.Child("host_name").value();
+        data.hostName = hostVal.is_string() ? hostVal.string_value() : "Unknown";
+        
+        auto tScoreVal = snapshot.Child("target_score").value();
+        data.targetScore = tScoreVal.is_int64() ? (int)tScoreVal.int64_value() : 50;
+
         auto playersSnap = snapshot.Child("players");
         for (auto& child : playersSnap.children()) {
             PlayerInfo p;
-            p.name = child.Child("name").value().string_value();
-            p.isBot = child.Child("is_bot").value().bool_value();
+            auto nameVal = child.Child("name").value();
+            p.name = nameVal.is_string() ? nameVal.string_value() : "Unknown";
+            
+            auto botVal = child.Child("is_bot").value();
+            p.isBot = botVal.is_bool() ? botVal.bool_value() : false;
+            
             data.players.push_back(p);
         }
 
@@ -47,6 +69,12 @@ std::string LobbyManager::generateRandomCode(int length) {
     return code;
 }
 
+void LobbyManager::setTargetScore(int score) {
+    if (isHost && currentLobbyRef.is_valid()) {
+        currentLobbyRef.Child("target_score").SetValue(score);
+    }
+}
+
 void LobbyManager::createLobby(const std::string& playerName, bool isPrivate) {
     currentLobbyCode = generateRandomCode();
     localPlayerName = playerName;
@@ -60,6 +88,7 @@ void LobbyManager::createLobby(const std::string& playerName, bool isPrivate) {
     lobbyInit["status"] = "waiting";
     lobbyInit["is_private"] = isPrivate;
     lobbyInit["host_name"] = playerName;
+    lobbyInit["target_score"] = 50;
 
     currentLobbyRef.SetValue(lobbyInit).OnCompletion([this, playerName](const firebase::Future<void>&) {
         // After creating, join yourself to the players list
@@ -68,7 +97,6 @@ void LobbyManager::createLobby(const std::string& playerName, bool isPrivate) {
         pData["name"] = playerName;
         pData["is_bot"] = false;
         myPlayerRef.SetValue(pData);
-
         currentLobbyRef.AddValueListener(&listener);
         std::cout << "Lobby created! Code: " << currentLobbyCode << "\n";
     });
@@ -90,6 +118,7 @@ void LobbyManager::joinLobby(const std::string& code, const std::string& playerN
         currentLobbyRef.AddValueListener(&listener);
         std::cout << "Joined lobby " << currentLobbyCode << " successfully.\n";
     });
+    myPlayerRef.Child("is_bot").OnDisconnect()->SetValue(firebase::Variant(true));
 }
 
 void LobbyManager::findPublicLobbies() {
@@ -201,10 +230,16 @@ void LobbyManager::syncTurnState(const Match& match) {
 }
 
 void LobbyManager::leaveLobby() {
-    if (isHost && currentLobbyRef.is_valid()) {
-        currentLobbyRef.RemoveValue(); // Destroys the whole lobby
-    } else if (myPlayerRef.is_valid()) {
-        myPlayerRef.RemoveValue();     // Removes just the guest
+    if (currentLobbyRef.is_valid()) {
+        // THE FIX: Detach the listeners so they don't crash in the background
+        currentLobbyRef.RemoveValueListener(&listener);
+        currentLobbyRef.Child("game_state").Child("moves").RemoveChildListener(&moveListener);
+        
+        if (isHost) {
+            currentLobbyRef.RemoveValue(); // Destroys the whole lobby
+        } else if (myPlayerRef.is_valid()) {
+            myPlayerRef.RemoveValue();     // Removes just the guest
+        }
     }
     currentLobbyCode = "";
 }

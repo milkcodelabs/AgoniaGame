@@ -14,11 +14,11 @@ private:
 
 public:
     Player(std::string n, int order);
-    
+    void sortHand(bool bySuit);
     std::string getName() const;
     int getScore() const;
     void addPoints(int p);
-    
+    void clearHand() { hand.clear(); }
     std::string getState() const;
     void setState(const std::string& s);
     

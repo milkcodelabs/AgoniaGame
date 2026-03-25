@@ -18,6 +18,7 @@ struct LobbyData {
     std::string hostId;
     std::string status; // "waiting" or "playing"
     std::string hostName;
+    int targetScore = 50;
     bool isPrivate;
     std::vector<PlayerInfo> players;
 };
@@ -79,6 +80,7 @@ public:
     // Callbacks for the UI/Main loop
     std::function<void(const LobbyData&)> onLobbyUpdated;
 
+    void setTargetScore(int score);
     void createLobby(const std::string& playerName, bool isPrivate);
     void joinLobby(const std::string& code, const std::string& playerName);
     void findPublicLobbies();

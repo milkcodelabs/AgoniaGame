@@ -16,8 +16,6 @@ Match::~Match() {
 }
 
 void Match::dealInitialCards() {
-    // REMOVED: deck.shuffle(); -> This is now handled by the Host in main.cpp
-    
     // Deal 7 cards to each player
     for (int i = 0; i < 7; ++i) {
         for (Player& p : players) {
@@ -35,16 +33,19 @@ void Match::dealInitialCards() {
 }
 
 void Match::reshuffleDiscardPile() {
+    matchSeed += 1; // Increment so it's different from the initial shuffle
     Card topCard = table->getTopCard();
     std::vector<Card> recycled = table->takeDiscardPile();
     deck.addCards(recycled);
-    deck.shuffle();
-    std::cout << "[SYSTEM] Deck exhausted. Discard pile reshuffled.\n";
+    
+    // THE BUG FIX: Deterministic Reshuffle
+    deck.shuffle(matchSeed); 
+    std::cout << "[SYSTEM] Deck exhausted. Discard pile reshuffled with seed: " << matchSeed << "\n";
 }
 
 void Match::safeDraw(Player& p) {
     if (deck.isEmpty()) {
-        reshuffleDiscardPile(); // [cite: 16]
+        reshuffleDiscardPile(); 
     }
     if (!deck.isEmpty()) {
         p.drawCard(deck.drawCard());
@@ -59,25 +60,25 @@ void Match::advanceTurn(int steps) {
 bool Match::isValidMove(const Card& c) const {
     Card top = table->getTopCard();
     
-    // If caught in a 7s chain, you MUST play a 7 [cite: 26, 27]
+    // If caught in a 7s chain, you MUST play a 7
     if (cardsToDraw > 0) {
         return c.getValue() == "7";
     }
     
-    // Cannot play an Ace on an Ace [cite: 24]
+    // Cannot play an Ace on an Ace 
     if (c.getValue() == "A" && top.getValue() == "A") {
         return false;
     }
     
-    // Ace can be played on anything else [cite: 22]
+    // Ace can be played on anything else 
     if (c.getValue() == "A") return true;
     
-    // If an Ace was previously played, match the declared suit [cite: 24]
+    // If an Ace was previously played, match the declared suit 
     if (!declaredSuit.empty()) {
         return c.getSuit() == declaredSuit;
     }
     
-    // Standard match by value or suit [cite: 10]
+    // Standard match by value or suit
     return (c.getValue() == top.getValue() || c.getSuit() == top.getSuit());
 }
 
@@ -98,13 +99,13 @@ bool Match::attemptPlayCard(int cardIndex, std::string newSuit) {
     
     // Handle Special Cards
     if (val == "A") {
-        declaredSuit = newSuit; // [cite: 23]
+        declaredSuit = newSuit; 
     } else if (val == "7") {
         cardsToDraw += 2; // Stacks if already active 
     } else if (val == "8") {
-        stepsToAdvance = 0; // Player plays again [cite: 29]
+        stepsToAdvance = 0; // Player plays again 
     } else if (val == "9") {
-        stepsToAdvance = 2; // Skips next player. Works perfectly for 2 or 4 players [cite: 33, 34]
+        stepsToAdvance = 2; // Skips next player. Works perfectly for 2 or 4 players 
     }
     
     // Check ending constraints: Cannot go out on a special card 
@@ -112,7 +113,7 @@ bool Match::attemptPlayCard(int cardIndex, std::string newSuit) {
         if (val == "A" || val == "7" || val == "8" || val == "9") {
             safeDraw(current); // Penalty draw
         } else {
-            matchOver = true; // [cite: 7, 18]
+            matchOver = true; 
             return true;
         }
     }
@@ -136,7 +137,7 @@ bool Match::attemptDrawPenalty() {
 bool Match::attemptDraw() {
     if (cardsToDraw > 0) return false; // Must resolve penalty first
     Player& current = players[currentPlayerIndex];
-    safeDraw(current); // [cite: 11, 13]
+    safeDraw(current); 
     return true;
 }
 
@@ -158,6 +159,34 @@ const std::vector<Player>& Match::getPlayers() const { return players; }
 
 void Match::endMatchPointsCalc() {
     for (Player& p : players) {
-        p.addPoints(p.calculateHandPoints()); // [cite: 18, 44]
+        p.addPoints(p.calculateHandPoints()); 
     }
+}
+
+// --- NEW: Reset logic for the Next Round ---
+void Match::resetForNextRound(unsigned int newSeed) {
+    matchSeed = newSeed;
+    matchOver = false;
+    cardsToDraw = 0;
+    declaredSuit = "";
+    currentPlayerIndex = 0;
+
+    // 1. Re-initialize a brand new 52-card deck
+    deck = Deck(); // Assumes your Deck constructor builds a standard 52-card deck
+    deck.shuffle(matchSeed);
+
+    // 2. Clear out the players' old hands and turn states
+    for (Player& p : players) {
+        p.clearHand(); 
+        p.setHasDrawnThisTurn(false);
+    }
+
+    // 3. Clear the table
+    if (table != nullptr) {
+        delete table;
+        table = nullptr;
+    }
+
+    // 4. Deal fresh cards!
+    dealInitialCards();
 }

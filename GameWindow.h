@@ -1,12 +1,15 @@
 #pragma once
 #include <SDL.h>
 #include <SDL_ttf.h>
+#include <SDL_mixer.h>
 #include <string>
 #include <vector>
 #include <functional>
 #include <map>
+
 #include "Match.h" 
 #include "LobbyManager.h" 
+
 
 enum class AppState {
     NAME_INPUT,
@@ -40,22 +43,25 @@ public:
 
     bool init();
     bool isRunning() const { return running; }
-
+    bool isLoadingNextRound = false; // UI Lock flag
+    
     // myIndex added so the UI knows exactly who the local player is
     void processInput(AppState& state, Match* match, int myIndex);
-    void render(AppState state, Match* match, int myIndex, const std::string& lobbyCode = "", const std::vector<PlayerInfo>& lobbyPlayers = {}, const std::vector<PublicLobbyInfo>& publicLobbies = {}, const std::string& hostName = "");
-    // --- Callbacks ---
+    void render(AppState state, Match* match, int myIndex, const std::string& myName, const std::string& lobbyCode, const std::vector<PlayerInfo>& lobbyPlayers, const std::vector<PublicLobbyInfo>& publicLobbies, const std::string& hostName, int targetScore, bool sortBySuit);    // --- Callbacks ---
     std::function<void(std::string)> onKickPlayerClicked;
     std::function<void(std::string)> onNameEntered;
     std::function<void(int)> onMenuOptionSelected; 
     std::function<void(std::string)> onJoinCodeEntered;
     std::function<void()> onFillBotsClicked;
     std::function<void()> onStartGameClicked;
+    std::function<void()> onToggleScoreClicked;
+    std::function<void()> onSortClicked;
     
     std::function<void(int)> onCardPlayed; // Renamed to clarify intent
     std::function<void(std::string)> onSuitSelected; 
     std::function<void()> onDrawClicked;
     std::function<void()> onPassClicked;
+    std::function<void()> onNextRoundClicked;
 
     void triggerSuitSelection() { needsSuitSelection = true; }
     
@@ -81,6 +87,7 @@ private:
     bool running = false;
     std::vector<UIButton> activeButtons;
     std::vector<SDL_Rect> handHitboxes;
+    
 
     std::string currentTextInput = "";
     bool needsSuitSelection = false; 

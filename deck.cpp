@@ -3,6 +3,7 @@
 #include <random>
 #include <chrono>
 #include <stdexcept>
+#include <random>
 
 Deck::Deck() {
     std::vector<std::string> suits = {"Hearts", "Diamonds", "Clubs", "Spades"}; // 
@@ -15,9 +16,9 @@ Deck::Deck() {
     }
 }
 
-void Deck::shuffle() {
-    unsigned seed = std::chrono::system_clock::now().time_since_epoch().count();
-    std::shuffle(cards.begin(), cards.end(), std::default_random_engine(seed));
+void Deck::shuffle(unsigned int seed) {
+    std::mt19937 rng(seed);
+    std::shuffle(cards.begin(), cards.end(), rng);
 }
 
 Card Deck::drawCard() {

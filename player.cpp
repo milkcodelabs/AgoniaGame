@@ -1,4 +1,33 @@
 #include "Player.h"
+#include <algorithm>
+
+// Helper functions for sorting
+int getCardValueInt(const std::string& v) {
+    if (v == "J") return 11;
+    if (v == "Q") return 12;
+    if (v == "K") return 13;
+    if (v == "A") return 14;
+    try { return std::stoi(v); } catch (...) { return 0; }
+}
+
+int getSuitInt(const std::string& s) {
+    if (s == "Hearts") return 1;
+    if (s == "Diamonds") return 2;
+    if (s == "Spades") return 3;
+    return 4; // Clubs
+}
+
+void Player::sortHand(bool bySuit) {
+    std::sort(hand.begin(), hand.end(), [bySuit](const Card& a, const Card& b) {
+        if (bySuit) {
+            if (a.getSuit() != b.getSuit()) return getSuitInt(a.getSuit()) < getSuitInt(b.getSuit());
+            return getCardValueInt(a.getValue()) < getCardValueInt(b.getValue());
+        } else {
+            if (a.getValue() != b.getValue()) return getCardValueInt(a.getValue()) < getCardValueInt(b.getValue());
+            return getSuitInt(a.getSuit()) < getSuitInt(b.getSuit());
+        }
+    });
+}
 
 Player::Player(std::string n, int order) 
     : name(n), turnOrder(order), state("hasn't played"), score(0), hasDrawnThisTurn(false) {}
