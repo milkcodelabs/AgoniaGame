@@ -3,6 +3,7 @@
 out/
 build/
 CMakeSettings.json
+google-services.json
 
 # Compiled Object files
 *.slo
@@ -23,6 +24,9 @@ CMakeSettings.json
 # Executables
 *.out
 *.app
+*.dll
+*.exe
+
 
 # Firebase Desktop Cache (LevelDB lock files, etc.)
 AppData/

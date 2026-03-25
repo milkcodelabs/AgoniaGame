@@ -63,7 +63,8 @@ void LobbyManager::createLobby(const std::string& playerName, bool isPrivate) {
 
     currentLobbyRef.SetValue(lobbyInit).OnCompletion([this, playerName](const firebase::Future<void>&) {
         // After creating, join yourself to the players list
-        myPlayerRef = currentLobbyRef.Child("players").PushChild();        std::map<std::string, firebase::Variant> pData;
+        myPlayerRef = currentLobbyRef.Child("players").PushChild();
+        std::map<std::string, firebase::Variant> pData;
         pData["name"] = playerName;
         pData["is_bot"] = false;
         myPlayerRef.SetValue(pData);
@@ -80,7 +81,8 @@ void LobbyManager::joinLobby(const std::string& code, const std::string& playerN
     currentLobbyRef = db->GetReference("lobbies").Child(code);
 
     // Add self to players list
-    myPlayerRef = currentLobbyRef.Child("players").PushChild();    std::map<std::string, firebase::Variant> pData;
+    myPlayerRef = currentLobbyRef.Child("players").PushChild();
+    std::map<std::string, firebase::Variant> pData;
     pData["name"] = playerName;
     pData["is_bot"] = false;
     
@@ -116,23 +118,23 @@ void LobbyManager::findPublicLobbies() {
       });
 }
 
-void LobbyManager::fillWithBots() {
+void LobbyManager::fillWithBots(int currentCount) {
     if (!isHost) return;
 
-    currentLobbyRef.Child("players").GetValue().OnCompletion([this](const firebase::Future<firebase::database::DataSnapshot>& done) {
-        auto& snapshot = *done.result();
-        int currentCount = (int)snapshot.children_count();
-        int botsNeeded = 4 - currentCount;
+    int botsNeeded = 4 - currentCount;
+    if (botsNeeded <= 0) return; // Failsafe
 
-        for (int i = 0; i < botsNeeded; ++i) {
-            auto botRef = currentLobbyRef.Child("players").PushChild();
-            std::map<std::string, firebase::Variant> bData;
-            bData["name"] = "Bot " + std::to_string(i + 1);
-            bData["is_bot"] = true;
-            bData["difficulty"] = "moderate";
-            botRef.SetValue(bData);
-        }
-    });
+    for (int i = 0; i < botsNeeded; ++i) {
+        auto botRef = currentLobbyRef.Child("players").PushChild();
+        std::map<std::string, firebase::Variant> bData;
+        
+        // This names them dynamically based on how many players are already there
+        bData["name"] = "Bot " + std::to_string(currentCount + i); 
+        bData["is_bot"] = true;
+        bData["difficulty"] = "moderate";
+        
+        botRef.SetValue(bData);
+    }
 }
 
 void LobbyManager::startGame() {
@@ -160,6 +162,9 @@ void LobbyManager::syncInitialMatch(Match& match) {
     state["declaredSuit"] = "";
     state["deck"] = fbDeck; // Push the full 52-card deck
     
+    // Wipe out any old moves from previous games if re-using a lobby code
+    gameRef.Child("moves").RemoveValue(); 
+
     gameRef.UpdateChildren(state);
 }
 
@@ -173,18 +178,19 @@ void LobbyManager::pushMove(int pIdx, std::string type, int cIdx, std::string su
     timestampMap[".sv"] = "timestamp";
     move["timestamp"] = timestampMap;
 
-    currentLobbyRef.Child("game_state").Child("lastMove").SetValue(move);
+    // THE BUG FIX: PushChild() creates a new list entry instead of overwriting a single node
+    currentLobbyRef.Child("game_state").Child("moves").PushChild().SetValue(move);
 }
 
 void LobbyManager::listenForMoves(std::function<void(int, std::string, int, std::string)> onMoveReceived) {
     moveListener.onMove = onMoveReceived;
-    currentLobbyRef.Child("game_state").Child("lastMove").AddValueListener(&moveListener);
+    // THE BUG FIX: Listen to the "moves" array using AddChildListener
+    currentLobbyRef.Child("game_state").Child("moves").AddChildListener(&moveListener);
 }
 
 void LobbyManager::syncTurnState(const Match& match) {
-    if (!isHost) return; // Optional: Or let any player update it if you prefer distributed authority. Let's let the player who just moved update it!
+    if (!isHost) return; 
     
-    // Actually, let's allow whoever just made a move to push the new state
     std::map<std::string, firebase::Variant> state;
     state["currentPlayerIndex"] = match.getCurrentPlayerIndex();
     state["cardsToDraw"] = match.getCardsToDraw();

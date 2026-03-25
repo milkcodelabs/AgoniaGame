@@ -4,7 +4,9 @@
 #include <map>
 #include <functional>
 #include "firebase/database.h"
+
 class Match;
+
 struct PlayerInfo {
     std::string name;
     bool isBot;
@@ -42,10 +44,12 @@ private:
     LobbyValueListener listener;
     std::string generateRandomCode(int length = 4);
 
-    class MoveValueListener : public firebase::database::ValueListener {
+    // THE BUG FIX: Change "ChildEventListener" to just "ChildListener"
+    class MoveChildListener : public firebase::database::ChildListener {
     public:
         std::function<void(int, std::string, int, std::string)> onMove;
-        void OnValueChanged(const firebase::database::DataSnapshot& snapshot) override {
+        
+        void OnChildAdded(const firebase::database::DataSnapshot& snapshot, const char* previous_sibling) override {
             if (!snapshot.exists() || !snapshot.has_children()) return;
             
             // Safe parsing for Firebase numbers
@@ -60,12 +64,13 @@ private:
             
             if (onMove && pIdx != -1) onMove(pIdx, type, cIdx, suit);
         }
+        void OnChildChanged(const firebase::database::DataSnapshot& snapshot, const char* previous_sibling) override {}
+        void OnChildRemoved(const firebase::database::DataSnapshot& snapshot) override {}
+        void OnChildMoved(const firebase::database::DataSnapshot& snapshot, const char* previous_sibling) override {}
         void OnCancelled(const firebase::database::Error& error, const char* message) override {}
     };
     
-    MoveValueListener moveListener;
-
-
+    MoveChildListener moveListener;
 
 public:
     LobbyManager(firebase::database::Database* database);
@@ -77,7 +82,7 @@ public:
     void createLobby(const std::string& playerName, bool isPrivate);
     void joinLobby(const std::string& code, const std::string& playerName);
     void findPublicLobbies();
-    void fillWithBots();
+    void fillWithBots(int currentCount);
     void startGame();
     void syncInitialMatch(Match& match); 
     void pushMove(int playerIndex, std::string type, int cardIndex = -1, std::string declaredSuit = "");
@@ -88,6 +93,4 @@ public:
     bool isLocalHost() const { return isHost; }
     std::string getCode() const { return currentLobbyCode; }
     void syncTurnState(const Match& match);
-    
 };
-

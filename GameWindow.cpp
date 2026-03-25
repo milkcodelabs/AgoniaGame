@@ -107,14 +107,13 @@ void GameWindow::processInput(AppState& state, Match* match, int myIndex) {
 
                     // Did they click a card in their hand?
                     if (!actionHandled) {
-                        for (int i = 0; i < (int)handHitboxes.size(); ++i) {
+                        // FIX: Loop backward so the visually "top" cards are clicked first!
+                        for (int i = (int)handHitboxes.size() - 1; i >= 0; --i) {
                             if (SDL_PointInRect(&clickPoint, &handHitboxes[i])) {
                                 if (selectedCardIndex == i) {
-                                    // Double click! Play the card.
                                     if (onCardPlayed) onCardPlayed(i);
                                     selectedCardIndex = -1; 
                                 } else {
-                                    // Single click! Select it.
                                     selectedCardIndex = i;
                                 }
                                 break; 

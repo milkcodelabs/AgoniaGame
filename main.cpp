@@ -3,6 +3,8 @@
 #include <map>
 #include <vector>
 #include <SDL.h> 
+#include <thread>
+#include <chrono>
 
 #include "firebase/app.h"
 #include "firebase/database.h"
@@ -16,9 +18,24 @@
 int main(int argc, char* argv[]) {
     std::cout << "Starting Agonia UI Engine...\n";
 
-    // --- 1. INITIALIZE FIREBASE ---
-    firebase::App* app = firebase::App::Create();
-    firebase::database::Database* database = firebase::database::Database::GetInstance(app, "https://agoniagame-default-rtdb.europe-west1.firebasedatabase.app/");
+    std::cout << "Initializing Firebase...\n";
+
+    // 1. Manually configure the options instead of reading the JSON file
+    firebase::AppOptions options;
+    options.set_app_id("1:553280452101:android:9f3251b8b14ec5b476ce6c"); // YOUR "mobilesdk_app_id"
+    options.set_api_key("AIzaSyB6Htx5s6xBhEoLC_BjrRH_nspCEMaRBNY");     // YOUR "current_key"
+    options.set_project_id("agoniagame");                 // YOUR "project_id"
+    options.set_database_url("https://agoniagame-default-rtdb.europe-west1.firebasedatabase.app/");
+
+    // 2. Create the app using those options
+    firebase::App* app = firebase::App::Create(options);
+
+    if (!app) {
+        std::cerr << "ERROR: Failed to initialize Firebase App!\n";
+        return 1;
+    }
+
+    firebase::database::Database* database = firebase::database::Database::GetInstance(app);
     database->set_persistence_enabled(false);
 
     // --- 2. INITIALIZE GRAPHICS ---
@@ -48,6 +65,8 @@ int main(int argc, char* argv[]) {
     bool botTimerStarted = false;
     Uint32 turnStartTime = SDL_GetTicks();
     int lastTurnIndex = -1; 
+    bool localHasDrawnThisTurn = false;
+    bool isFillingBots = false;
 
     // --- 4. UI CALLBACK BINDINGS ---
     window.onKickPlayerClicked = [&](std::string targetName) {
@@ -98,9 +117,17 @@ int main(int argc, char* argv[]) {
     };
 
     window.onFillBotsClicked = [&]() {
-        lobbyManager.fillWithBots();
+        if (currentLobbyPlayers.size() < 4 && !isFillingBots) {
+            isFillingBots = true;
+            
+            // Pass the exact, real-time local count to bypass Firebase delays
+            lobbyManager.fillWithBots(currentLobbyPlayers.size());
+            
+            // Unlock after 2 seconds to prevent spam
+            std::thread([&]() { std::this_thread::sleep_for(std::chrono::seconds(2)); isFillingBots = false; }).detach();
+        }
     };
-
+    
     window.onStartGameClicked = [&]() {
         lobbyManager.startGame();
     };
@@ -138,11 +165,19 @@ int main(int argc, char* argv[]) {
 
     window.onDrawClicked = [&]() {
         if (currentState == AppState::PLAYING && currentMatch && currentMatch->getCurrentPlayerIndex() == myIndex) {
+            if (localHasDrawnThisTurn) {
+                window.triggerNotification("You can only draw once per turn!");
+                return;
+            }
+            
             bool success = (currentMatch->getCardsToDraw() > 0) ? currentMatch->attemptDrawPenalty() : currentMatch->attemptDraw();
             if (success) {
+                localHasDrawnThisTurn = true;
                 lobbyManager.pushMove(myIndex, "D", -1, "");
                 lobbyManager.syncTurnState(*currentMatch);
                 window.clearCardSelection();
+            } else {
+                window.triggerNotification("The deck is completely empty!");
             }
         }
     };
@@ -264,6 +299,7 @@ int main(int argc, char* argv[]) {
                 turnStartTime = SDL_GetTicks(); 
                 botTimerStarted = false;        
                 window.clearCardSelection(); 
+                localHasDrawnThisTurn = false;
             }
             
             if (lobbyManager.isLocalHost() && bots.count(currentIdx) > 0) {
