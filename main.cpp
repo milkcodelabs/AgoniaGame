@@ -173,14 +173,18 @@ int main(int argc, char* argv[]) {
     window.onCardPlayed = [&](int cardIndex) {
         if (currentState == AppState::PLAYING && currentMatch && currentMatch->getCurrentPlayerIndex() == myIndex) {
             const auto& hand = currentMatch->getCurrentPlayer().getHand();
+            Card playedCard = hand[cardIndex];
             
-            if (hand[cardIndex].getValue() == "A") {
+            // THE FIX: Create a unique Identity for the card so sorting order doesn't matter
+            std::string cardId = playedCard.getValue() + "|" + playedCard.getSuit();
+
+            if (playedCard.getValue() == "A") {
                 pendingCardIndex = cardIndex;
                 window.triggerSuitSelection(); 
             } else {
                 bool success = currentMatch->attemptPlayCard(cardIndex, "");
                 if (success) {
-                    lobbyManager.pushMove(myIndex, std::to_string(cardIndex), cardIndex, currentMatch->getDeclaredSuit());
+                    lobbyManager.pushMove(myIndex, cardId, cardIndex, currentMatch->getDeclaredSuit());
                     lobbyManager.syncTurnState(*currentMatch);
                 } else {
                     window.triggerNotification("Invalid move! Card must match suit or value.");
@@ -191,9 +195,12 @@ int main(int argc, char* argv[]) {
 
     window.onSuitSelected = [&](std::string suit) {
         if (pendingCardIndex != -1 && currentMatch) {
+            const auto& hand = currentMatch->getCurrentPlayer().getHand();
+            std::string cardId = hand[pendingCardIndex].getValue() + "|" + hand[pendingCardIndex].getSuit();
+
             bool success = currentMatch->attemptPlayCard(pendingCardIndex, suit);
             if (success) {
-                lobbyManager.pushMove(myIndex, std::to_string(pendingCardIndex), pendingCardIndex, suit);
+                lobbyManager.pushMove(myIndex, cardId, pendingCardIndex, suit);
                 lobbyManager.syncTurnState(*currentMatch);
                 window.clearCardSelection(); 
             }
@@ -263,9 +270,27 @@ int main(int argc, char* argv[]) {
                 (currentMatch->getCardsToDraw() > 0) ? currentMatch->attemptDrawPenalty() : currentMatch->attemptDraw();
             } else if (type == "P" || type == "p") {
                 currentMatch->attemptPass();
+            } else if (type == "FS") {
+                // THE FAILSAFE: Host detected a total freeze and forced the turn forward
+                std::cout << "[SYSTEM] Executing Failsafe Turn Advance!\n";
+                currentMatch->advanceTurn(1);
             } else {
-                bool success = currentMatch->attemptPlayCard(cIdx, suit);
-                if (!success) std::cout << "[CRITICAL DESYNC] Remote move rejected by local rules!\n";
+                // THE FIX: "type" is now "Value|Suit". We must find the real index in the remote hand!
+                int realIdx = -1;
+                const auto& remoteHand = currentMatch->getPlayer(pIdx).getHand();
+                for (int i = 0; i < remoteHand.size(); ++i) {
+                    if (remoteHand[i].getValue() + "|" + remoteHand[i].getSuit() == type) {
+                        realIdx = i;
+                        break;
+                    }
+                }
+
+                if (realIdx != -1) {
+                    bool success = currentMatch->attemptPlayCard(realIdx, suit);
+                    if (!success) std::cout << "[CRITICAL DESYNC] Remote move rejected by local rules!\n";
+                } else {
+                    std::cout << "[CRITICAL DESYNC] Could not find card '" << type << "' in Player " << pIdx << "'s hand!\n";
+                }
             }
         });
     };
@@ -315,6 +340,7 @@ int main(int argc, char* argv[]) {
             }
 
             if (currentState == AppState::LOBBY && data.status == "playing") {
+                if (currentMatch) return;
                 std::cout << "Game started! Preparing match...\n";
                 
                 std::vector<std::string> playerNames;
@@ -399,18 +425,52 @@ int main(int argc, char* argv[]) {
                     botTimerStarted = true;
                 } else if (SDL_GetTicks() - botTurnStartTime > 1500) { 
                     BotMoveData bData = bots[currentIdx]->takeTurn(*currentMatch); 
-                    lobbyManager.pushMove(currentIdx, bData.type, bData.cardIndex, bData.suit);
+                    
+                    // The bot logic fix: Send the card identity if the bot played a card
+                    std::string networkType = bData.type;
+                    if (networkType != "D" && networkType != "P") {
+                        Card playedCard = currentMatch->getTopCard();
+                        networkType = playedCard.getValue() + "|" + playedCard.getSuit();
+                    }
+                    
+                    lobbyManager.pushMove(currentIdx, networkType, bData.cardIndex, bData.suit);
                     lobbyManager.syncTurnState(*currentMatch);
                     botTimerStarted = false; 
                 }
             }
             else if (currentIdx == myIndex) {
+                // THE SILENT DRAW FIX (Local Player Timeout)
                 if (SDL_GetTicks() - turnStartTime > 30000) { 
                     std::cout << "TIMEOUT! Auto-passing...\n";
-                    currentMatch->attemptDraw(); 
+                    if (!localHasDrawnThisTurn) {
+                        bool drew = (currentMatch->getCardsToDraw() > 0) ? currentMatch->attemptDrawPenalty() : currentMatch->attemptDraw();
+                        if (drew) lobbyManager.pushMove(myIndex, "D", -1, "");
+                    }
                     currentMatch->attemptPass();
                     lobbyManager.pushMove(myIndex, "P", -1, "");
                     lobbyManager.syncTurnState(*currentMatch);
+                }
+            } 
+            else if (lobbyManager.isLocalHost() && bots.count(currentIdx) == 0) {
+                // THE GHOST CLIENT FIX
+                // Host watches remote players. If they sit idle for 35s, host forces their turn!
+                if (SDL_GetTicks() - turnStartTime > 35000) {
+                    std::cout << "[SYSTEM] Ghost Client Detected! Host forcing skip for Player " << currentIdx << "\n";
+                    // Note: We don't execute locally, we just push the move. The network listener will execute it for everyone.
+                    if (!currentMatch->getPlayer(currentIdx).getHasDrawnThisTurn()) {
+                        lobbyManager.pushMove(currentIdx, "D", -1, "");
+                    }
+                    lobbyManager.pushMove(currentIdx, "P", -1, "");
+                    turnStartTime = SDL_GetTicks(); // Reset so we don't spam the DB
+                }
+                
+                // THE ULTIMATE FAILSAFE
+                // If the game is somehow frozen on a player for 45 seconds, nuke the turn state forward.
+                if (SDL_GetTicks() - turnStartTime > 45000) {
+                    std::cout << "[FAILSAFE] Critical Stall Detected! Forcing Game State Forward.\n";
+                    lobbyManager.pushMove(currentIdx, "FS", -1, ""); // Broadcast Failsafe
+                    lobbyManager.syncTurnState(*currentMatch);
+                    turnStartTime = SDL_GetTicks();
                 }
             }
         } else if (currentState == AppState::PLAYING && currentMatch && currentMatch->isMatchOver()) {

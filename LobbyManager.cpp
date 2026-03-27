@@ -212,8 +212,10 @@ void LobbyManager::pushMove(int pIdx, std::string type, int cIdx, std::string su
 }
 
 void LobbyManager::listenForMoves(std::function<void(int, std::string, int, std::string)> onMoveReceived) {
+    // THE FIX: Remove any existing listener before attaching a new one
+    currentLobbyRef.Child("game_state").Child("moves").RemoveChildListener(&moveListener);
+    
     moveListener.onMove = onMoveReceived;
-    // THE BUG FIX: Listen to the "moves" array using AddChildListener
     currentLobbyRef.Child("game_state").Child("moves").AddChildListener(&moveListener);
 }
 

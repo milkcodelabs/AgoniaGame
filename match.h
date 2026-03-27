@@ -19,7 +19,6 @@ private:
     
     void safeDraw(Player& p);
     void reshuffleDiscardPile();
-    void advanceTurn(int steps = 1);
     unsigned int matchSeed = 0;
 
 public:
@@ -27,6 +26,7 @@ public:
     ~Match();
     
     void dealInitialCards();
+    void advanceTurn(int steps = 1);
     Deck& getDeck() { return deck; }
     
     bool isValidMove(const Card& c) const;
