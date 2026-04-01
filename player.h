@@ -14,6 +14,7 @@ private:
 
 public:
     Player(std::string n, int order);
+    int getIndex() const { return turnOrder; }
     void sortHand(bool bySuit);
     std::string getName() const;
     int getScore() const;

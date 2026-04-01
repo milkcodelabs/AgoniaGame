@@ -2,6 +2,7 @@
 #include <vector>
 #include <string>
 #include <atomic>
+#include <functional>
 #include "Player.h"
 #include "Deck.h"
 #include "Table.h"
@@ -30,6 +31,7 @@ public:
     Deck& getDeck() { return deck; }
     
     bool isValidMove(const Card& c) const;
+    std::string getInvalidReason(const Card& c) const;
     
     // Core Actions for the Console to call
     bool attemptPlayCard(int cardIndex, std::string newSuit = "");
@@ -51,4 +53,7 @@ public:
     // --- NEW: Post-Match Loop & Deterministic RNG ---
     void setSeed(unsigned int seed) { matchSeed = seed; }
     void resetForNextRound(unsigned int newSeed);
+
+    std::function<void(int playerIndex, Card card)> onCardPlayedEvent;
+    std::function<void(int playerIndex)> onCardDrawnEvent;
 };

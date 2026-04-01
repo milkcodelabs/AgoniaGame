@@ -77,6 +77,9 @@ int main(int argc, char* argv[]) {
     int lastTurnIndex = -1; 
     bool localHasDrawnThisTurn = false;
     bool isFillingBots = false;
+    
+    // --- Delta Time Tracker ---
+    Uint32 lastFrameTime = SDL_GetTicks(); 
 
     // --- 4. UI CALLBACK BINDINGS ---
     window.onToggleScoreClicked = [&]() {
@@ -88,16 +91,13 @@ int main(int argc, char* argv[]) {
     };
 
     window.onNextRoundClicked = [&]() {
-        // Only run if we aren't already loading!
         if (lobbyManager.isLocalHost() && currentMatch && !window.isLoadingNextRound) {
-            window.isLoadingNextRound = true; // Lock the UI instantly
+            window.isLoadingNextRound = true; 
             unsigned int newRoundSeed = static_cast<unsigned int>(std::time(nullptr) + rand()); 
 
-            // THE FIX: Flush the massive moves list from Firebase first to prevent lag!
             auto movesRef = database->GetReference("lobbies").Child(lobbyManager.getCode()).Child("game_state").Child("moves");
-            
+            window.playSound(Sfx::SHUFFLE);
             movesRef.RemoveValue().OnCompletion([&, newRoundSeed](const firebase::Future<void>&) {
-                // Once the database is clean, push the Restart command
                 lobbyManager.pushMove(myIndex, "RT", (int)newRoundSeed, "");
             });
         }
@@ -123,7 +123,6 @@ int main(int argc, char* argv[]) {
             database->GetReference("lobbies").OrderByChild("status").EqualTo("waiting").GetValue()
             .OnCompletion([&](const firebase::Future<firebase::database::DataSnapshot>& done) {
                 if (done.error() == 0 && done.result()->exists()) {
-                    // Safe parsing on background thread
                     std::vector<PublicLobbyInfo> tempLobbies;
                     for (auto& lobby : done.result()->children()) {
                         auto privVal = lobby.Child("is_private").value();
@@ -136,7 +135,6 @@ int main(int argc, char* argv[]) {
                             tempLobbies.push_back(info);
                         }
                     }
-                    // Dispatch back to main thread
                     runOnMainThread([&, tempLobbies]() {
                         publicLobbies = tempLobbies;
                     });
@@ -144,12 +142,13 @@ int main(int argc, char* argv[]) {
             });
         }
         else if (choice == -1) {
-            if (currentState == AppState::LOBBY) {
+            // If we are returning from ANY multiplayer state, nuke everything.
+            if (currentState == AppState::LOBBY || currentState == AppState::PLAYING || currentState == AppState::GAME_OVER) {
                 lobbyManager.leaveLobby();
-                currentState = AppState::MAIN_MENU;
-            } else {
-                currentState = AppState::MAIN_MENU;
+                currentMatch.reset(); 
+                bots.clear();
             }
+            currentState = AppState::MAIN_MENU;
         }
     };
 
@@ -175,19 +174,27 @@ int main(int argc, char* argv[]) {
             const auto& hand = currentMatch->getCurrentPlayer().getHand();
             Card playedCard = hand[cardIndex];
             
-            // THE FIX: Create a unique Identity for the card so sorting order doesn't matter
             std::string cardId = playedCard.getValue() + "|" + playedCard.getSuit();
 
-            if (playedCard.getValue() == "A") {
+            // 1. Check EXACTLY why a move might be invalid before doing anything else
+            std::string errorMsg = currentMatch->getInvalidReason(playedCard);
+
+            if (!errorMsg.empty()) {
+                // Move is illegal. Tell them exactly why. 
+                // (This automatically plays Sfx::FAIL based on our last update!)
+                window.triggerNotification(errorMsg);
+            } 
+            else if (playedCard.getValue() == "A") {
+                // Move is legal AND it's an Ace. Now it's safe to open the menu.
                 pendingCardIndex = cardIndex;
                 window.triggerSuitSelection(); 
-            } else {
+            } 
+            else {
+                // Move is legal and a normal card. Play it.
                 bool success = currentMatch->attemptPlayCard(cardIndex, "");
                 if (success) {
                     lobbyManager.pushMove(myIndex, cardId, cardIndex, currentMatch->getDeclaredSuit());
                     lobbyManager.syncTurnState(*currentMatch);
-                } else {
-                    window.triggerNotification("Invalid move! Card must match suit or value.");
                 }
             }
         }
@@ -202,6 +209,10 @@ int main(int argc, char* argv[]) {
             if (success) {
                 lobbyManager.pushMove(myIndex, cardId, pendingCardIndex, suit);
                 lobbyManager.syncTurnState(*currentMatch);
+                window.clearCardSelection(); 
+            } else {
+                // THE FIX: Catch the invalid move (like Ace on Ace) and alert the player!
+                window.triggerNotification("Invalid move! You cannot play an Ace on an Ace.");
                 window.clearCardSelection(); 
             }
             pendingCardIndex = -1;
@@ -231,6 +242,7 @@ int main(int argc, char* argv[]) {
         if (currentState == AppState::PLAYING && currentMatch && currentMatch->getCurrentPlayerIndex() == myIndex) {
             bool success = currentMatch->attemptPass();
             if (success) {
+                window.playSound(Sfx::PASS);
                 lobbyManager.pushMove(myIndex, "P", -1, "");
                 lobbyManager.syncTurnState(*currentMatch);
                 window.clearCardSelection();
@@ -244,24 +256,22 @@ int main(int argc, char* argv[]) {
     // --- 5. NETWORK LISTENER & LOBBY SYNC ---
     
     auto networkMoveHandler = [&](int pIdx, std::string type, int cIdx, std::string suit) {
-        // Dispatch to Main Thread to prevent Race Conditions
         runOnMainThread([&, pIdx, type, cIdx, suit]() {
             if (!currentMatch) return;
 
-            // 1. CATCH RESTART COMMAND FIRST (Everyone, including Host, must process this)
             if (type == "RT") {
                 std::cout << "[SYSTEM] Starting next round with seed: " << cIdx << "\n";
                 currentMatch->resetForNextRound((unsigned int)cIdx);
                 
                 window.isLoadingNextRound = false;
+                window.playSound(Sfx::SHUFFLE);
                 currentState = AppState::PLAYING;
-                lastTurnIndex = -1; // Force timer reset
+                lastTurnIndex = -1; 
                 localHasDrawnThisTurn = false;
                 window.clearCardSelection();
                 return; 
             }
 
-            // 2. NOW ignore normal moves if we made them or if it's a bot we control
             if (pIdx == myIndex || (lobbyManager.isLocalHost() && bots.count(pIdx) > 0)) return; 
 
             std::cout << "\n[NETWORK] Received Move -> Player: " << pIdx << " | Type: " << type << "\n";
@@ -269,13 +279,12 @@ int main(int argc, char* argv[]) {
             if (type == "D" || type == "d") {
                 (currentMatch->getCardsToDraw() > 0) ? currentMatch->attemptDrawPenalty() : currentMatch->attemptDraw();
             } else if (type == "P" || type == "p") {
+                window.playSound(Sfx::PASS);
                 currentMatch->attemptPass();
             } else if (type == "FS") {
-                // THE FAILSAFE: Host detected a total freeze and forced the turn forward
                 std::cout << "[SYSTEM] Executing Failsafe Turn Advance!\n";
                 currentMatch->advanceTurn(1);
             } else {
-                // THE FIX: "type" is now "Value|Suit". We must find the real index in the remote hand!
                 int realIdx = -1;
                 const auto& remoteHand = currentMatch->getPlayer(pIdx).getHand();
                 for (int i = 0; i < remoteHand.size(); ++i) {
@@ -296,13 +305,13 @@ int main(int argc, char* argv[]) {
     };
 
     lobbyManager.onLobbyUpdated = [&](const LobbyData& data) {
-        // Dispatch to Main Thread
         runOnMainThread([&, data]() {
             if (data.status == "deleted") {
-                if (currentState == AppState::LOBBY || currentState == AppState::PLAYING) {
-                    lobbyManager.leaveLobby(); // Explicitly disconnect listeners
-                    currentMatch.reset();      // Wipe the game board from memory
-                    bots.clear();              // Destroy all local bots
+                // THE FIX: Added GAME_OVER to the state check
+                if (currentState == AppState::LOBBY || currentState == AppState::PLAYING || currentState == AppState::GAME_OVER) {
+                    lobbyManager.leaveLobby(); 
+                    currentMatch.reset();      
+                    bots.clear();              
                     
                     currentState = AppState::MAIN_MENU;
                     window.triggerNotification("The host closed the lobby.");
@@ -325,7 +334,6 @@ int main(int argc, char* argv[]) {
                 }
             }
 
-            // MID-GAME DISCONNECT HANDLING
             if (currentState == AppState::PLAYING) {
                 if (lobbyManager.isLocalHost()) {
                     for (int i = 0; i < data.players.size(); ++i) {
@@ -352,12 +360,55 @@ int main(int argc, char* argv[]) {
                 
                 currentMatch = std::make_unique<Match>(playerNames);
 
+                // --- BIND NEW ANIMATION EVENTS TO THE MATCH ---
+                currentMatch->onCardPlayedEvent = [&](int pIdx, Card card) {
+                    window.playSound(Sfx::PLAY_CARD);
+                    float startX = 1920 / 2.0f, startY = 1080 / 2.0f; // Default center
+                    float targetX = 1920 / 2.0f - 75.0f, targetY = 1080 / 2.0f - 100.0f; // Pile coordinates
+
+                    if (pIdx == -1) { // -1 signifies the Deck (Dealer)
+                        startX = 1920 / 2.0f - 300.0f;
+                    } else {
+                        int numPlayers = currentMatch->getPlayers().size();
+                        int relativePos = (pIdx - myIndex + numPlayers) % numPlayers;
+                        
+                        // Calculate position based on relative location
+                        if (relativePos == 0)      { startY = 1080.0f - 180.0f; } // Bottom
+                        else if ((numPlayers == 2 && relativePos == 1) || (numPlayers == 4 && relativePos == 2)) 
+                                                   { startY = 50.0f; } // Top
+                        else if (numPlayers >= 3 && relativePos == 1) 
+                                                   { startX = 50.0f; } // Left
+                        else                       { startX = 1920.0f - 150.0f; } // Right
+                    }
+                    window.triggerAnimation(card, startX, startY, targetX, targetY);
+                };
+
+                currentMatch->onCardDrawnEvent = [&](int pIdx) {
+                    window.playSound(Sfx::DRAW);
+                    float startX = 1920 / 2.0f - 300.0f, startY = 1080 / 2.0f; // Deck coordinates
+                    float targetX = 1920 / 2.0f, targetY = 1080 / 2.0f;
+
+                    int numPlayers = currentMatch->getPlayers().size();
+                    int relativePos = (pIdx - myIndex + numPlayers) % numPlayers;
+                    
+                    if (relativePos == 0)      { targetY = 1080.0f - 180.0f; } // Bottom
+                    else if ((numPlayers == 2 && relativePos == 1) || (numPlayers == 4 && relativePos == 2)) 
+                                               { targetY = 50.0f; } // Top
+                    else if (numPlayers >= 3 && relativePos == 1) 
+                                               { targetX = 50.0f; } // Left
+                    else                       { targetX = 1920.0f - 150.0f; } // Right
+
+                    // Create a generic card back to slide across the screen
+                    Card dummyCard("0", "Hidden"); 
+                    window.triggerAnimation(dummyCard, startX, startY, targetX, targetY);
+                };
+                // ----------------------------------------------
+
                 if (lobbyManager.isLocalHost()) {
-                    // 1. Generate a starting seed for the match
+                    window.playSound(Sfx::SHUFFLE);
+                    window.playSound(Sfx::START);
                     unsigned int initialSeed = static_cast<unsigned int>(std::time(nullptr));
                     currentMatch->setSeed(initialSeed);
-                    
-                    // 2. Pass the seed into the shuffle function
                     currentMatch->getDeck().shuffle(initialSeed);
                     
                     lobbyManager.syncInitialMatch(*currentMatch);
@@ -378,6 +429,8 @@ int main(int argc, char* argv[]) {
                             }
                             
                             runOnMainThread([&, syncedDeck, networkMoveHandler]() {
+                                window.playSound(Sfx::SHUFFLE);
+                                window.playSound(Sfx::START);
                                 currentMatch->getDeck().loadFromSerialized(syncedDeck);
                                 currentMatch->dealInitialCards();
                                 lobbyManager.listenForMoves(networkMoveHandler);
@@ -395,6 +448,10 @@ int main(int argc, char* argv[]) {
     
     while (window.isRunning()) {
         Uint32 frameStart = SDL_GetTicks();
+        
+        // --- Calculate Delta Time for Animations ---
+        float dt = (frameStart - lastFrameTime) / 1000.0f;
+        lastFrameTime = frameStart;
 
         // --- Execute pending background tasks safely ---
         {
@@ -417,6 +474,9 @@ int main(int argc, char* argv[]) {
                 botTimerStarted = false;        
                 localHasDrawnThisTurn = false;
                 window.clearCardSelection(); 
+                if (currentIdx == myIndex) {
+                    window.playSound(Sfx::YOUR_TURN);
+                }
             }
             
             if (lobbyManager.isLocalHost() && bots.count(currentIdx) > 0) {
@@ -426,7 +486,6 @@ int main(int argc, char* argv[]) {
                 } else if (SDL_GetTicks() - botTurnStartTime > 1500) { 
                     BotMoveData bData = bots[currentIdx]->takeTurn(*currentMatch); 
                     
-                    // The bot logic fix: Send the card identity if the bot played a card
                     std::string networkType = bData.type;
                     if (networkType != "D" && networkType != "P") {
                         Card playedCard = currentMatch->getTopCard();
@@ -439,36 +498,31 @@ int main(int argc, char* argv[]) {
                 }
             }
             else if (currentIdx == myIndex) {
-                // THE SILENT DRAW FIX (Local Player Timeout)
                 if (SDL_GetTicks() - turnStartTime > 30000) { 
                     std::cout << "TIMEOUT! Auto-passing...\n";
                     if (!localHasDrawnThisTurn) {
                         bool drew = (currentMatch->getCardsToDraw() > 0) ? currentMatch->attemptDrawPenalty() : currentMatch->attemptDraw();
                         if (drew) lobbyManager.pushMove(myIndex, "D", -1, "");
                     }
+                    window.playSound(Sfx::PASS);
                     currentMatch->attemptPass();
                     lobbyManager.pushMove(myIndex, "P", -1, "");
                     lobbyManager.syncTurnState(*currentMatch);
                 }
             } 
             else if (lobbyManager.isLocalHost() && bots.count(currentIdx) == 0) {
-                // THE GHOST CLIENT FIX
-                // Host watches remote players. If they sit idle for 35s, host forces their turn!
                 if (SDL_GetTicks() - turnStartTime > 35000) {
                     std::cout << "[SYSTEM] Ghost Client Detected! Host forcing skip for Player " << currentIdx << "\n";
-                    // Note: We don't execute locally, we just push the move. The network listener will execute it for everyone.
                     if (!currentMatch->getPlayer(currentIdx).getHasDrawnThisTurn()) {
                         lobbyManager.pushMove(currentIdx, "D", -1, "");
                     }
                     lobbyManager.pushMove(currentIdx, "P", -1, "");
-                    turnStartTime = SDL_GetTicks(); // Reset so we don't spam the DB
+                    turnStartTime = SDL_GetTicks(); 
                 }
                 
-                // THE ULTIMATE FAILSAFE
-                // If the game is somehow frozen on a player for 45 seconds, nuke the turn state forward.
                 if (SDL_GetTicks() - turnStartTime > 45000) {
                     std::cout << "[FAILSAFE] Critical Stall Detected! Forcing Game State Forward.\n";
-                    lobbyManager.pushMove(currentIdx, "FS", -1, ""); // Broadcast Failsafe
+                    lobbyManager.pushMove(currentIdx, "FS", -1, ""); 
                     lobbyManager.syncTurnState(*currentMatch);
                     turnStartTime = SDL_GetTicks();
                 }
@@ -476,15 +530,21 @@ int main(int argc, char* argv[]) {
         } else if (currentState == AppState::PLAYING && currentMatch && currentMatch->isMatchOver()) {
             currentState = AppState::GAME_OVER;
             currentMatch->endMatchPointsCalc();
+            bool tournamentOver = false;
+            for (const Player& p : currentMatch->getPlayers()) {
+                if (p.getScore() >= currentTargetScore) tournamentOver = true;
+            }
+            if (tournamentOver) window.playSound(Sfx::TOURNAMENT_END);
+            else window.playSound(Sfx::ROUND_END);
         }
 
-        // Keep the hand sorted every frame!
         if (currentMatch && myIndex != -1) {
             currentMatch->getPlayer(myIndex).sortHand(sortBySuit);
         }
 
-        // 3. Render State (Make sure to pass the new variables!)
-        window.render(currentState, currentMatch.get(), myIndex, myName, lobbyManager.getCode(), currentLobbyPlayers, publicLobbies, currentHostName, currentTargetScore, sortBySuit);
+        // --- 3. Pass dt to the Render State ---
+        window.render(dt, currentState, currentMatch.get(), myIndex, myName, lobbyManager.getCode(), currentLobbyPlayers, publicLobbies, currentHostName, currentTargetScore, sortBySuit);
+        
         // 4. Cap at ~60 FPS
         Uint32 frameTime = SDL_GetTicks() - frameStart;
         if (frameTime < 16) {

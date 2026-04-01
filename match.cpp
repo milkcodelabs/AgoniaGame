@@ -28,7 +28,13 @@ void Match::dealInitialCards() {
     }
 
     // Flip first card to table
-    table = new Table(deck.drawCard());
+    Card firstCard = deck.drawCard();
+    table = new Table(firstCard);
+    
+    // ANIMATION HOOK: Dealer flips the first card to the table. 
+    // We pass -1 as the playerIndex to signify it came from the deck.
+    if (onCardPlayedEvent) onCardPlayedEvent(-1, firstCard);
+    
     declaredSuit = "";
 }
 
@@ -48,8 +54,42 @@ void Match::safeDraw(Player& p) {
         reshuffleDiscardPile(); 
     }
     if (!deck.isEmpty()) {
-        p.drawCard(deck.drawCard());
+        Card drawnCard = deck.drawCard();
+        
+        // ANIMATION HOOK: A card is moving from the Deck to a Player's hand
+        if (onCardDrawnEvent) onCardDrawnEvent(p.getIndex());
+        
+        p.drawCard(drawnCard);
     }
+}
+
+std::string Match::getInvalidReason(const Card& c) const {
+    Card top = table->getTopCard();
+    
+    // If caught in a 7s chain, you MUST play a 7
+    if (cardsToDraw > 0) {
+        if (c.getValue() != "7") return "Penalty active! You MUST play a 7.";
+    }
+    
+    // Cannot play an Ace on an Ace 
+    if (c.getValue() == "A" && top.getValue() == "A") {
+        return "You cannot play an Ace on top of another Ace!";
+    }
+    
+    // Ace can be played on anything else 
+    if (c.getValue() == "A") return "";
+    
+    // If an Ace was previously played, match the declared suit 
+    if (!declaredSuit.empty()) {
+        if (c.getSuit() != declaredSuit) return "You must match the active suit: " + declaredSuit + "!";
+    }
+    
+    // Standard match by value or suit
+    if (c.getValue() != top.getValue() && c.getSuit() != top.getSuit()) {
+        return "Card must match the current suit (" + top.getSuit() + ") or value (" + top.getValue() + ")!";
+    }
+    
+    return ""; // Empty string means the move is perfectly valid
 }
 
 void Match::advanceTurn(int steps) {
@@ -88,6 +128,10 @@ bool Match::attemptPlayCard(int cardIndex, std::string newSuit) {
     
     Card toPlay = current.getHand()[cardIndex];
     if (!isValidMove(toPlay)) return false;
+    
+    // ANIMATION HOOK: Trigger this BEFORE the card is removed from the player's hand memory, 
+    // so the UI knows exactly what card was played and who played it.
+    if (onCardPlayedEvent) onCardPlayedEvent(currentPlayerIndex, toPlay);
     
     // Move is valid, execute play
     current.playCard(cardIndex);
@@ -163,7 +207,6 @@ void Match::endMatchPointsCalc() {
     }
 }
 
-// --- NEW: Reset logic for the Next Round ---
 void Match::resetForNextRound(unsigned int newSeed) {
     matchSeed = newSeed;
     matchOver = false;
@@ -172,7 +215,7 @@ void Match::resetForNextRound(unsigned int newSeed) {
     currentPlayerIndex = 0;
 
     // 1. Re-initialize a brand new 52-card deck
-    deck = Deck(); // Assumes your Deck constructor builds a standard 52-card deck
+    deck = Deck(); 
     deck.shuffle(matchSeed);
 
     // 2. Clear out the players' old hands and turn states
