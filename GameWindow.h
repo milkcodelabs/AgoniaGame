@@ -70,9 +70,8 @@ public:
     
     // myIndex added so the UI knows exactly who the local player is
     void processInput(AppState& state, Match* match, int myIndex);
-    
-    // --- UPDATED: Added float dt for animations ---
-    void render(float dt, AppState state, Match* match, int myIndex, const std::string& myName, const std::string& lobbyCode, const std::vector<PlayerInfo>& lobbyPlayers, const std::vector<PublicLobbyInfo>& publicLobbies, const std::string& hostName, int targetScore, bool sortBySuit);    
+
+    void render(float dt, float turnProgress, AppState state, Match* match, int myIndex, const std::string& myName, const std::string& lobbyCode, const std::vector<PlayerInfo>& lobbyPlayers, const std::vector<PublicLobbyInfo>& publicLobbies, const std::string& hostName, int targetScore, bool sortBySuit);
     
     // --- Callbacks ---
     std::function<void(std::string)> onKickPlayerClicked;

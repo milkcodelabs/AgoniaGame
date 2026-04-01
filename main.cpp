@@ -453,6 +453,14 @@ int main(int argc, char* argv[]) {
         float dt = (frameStart - lastFrameTime) / 1000.0f;
         lastFrameTime = frameStart;
 
+        // --- Calculate Turn Timer Progress ---
+        float turnProgress = 1.0f; 
+        if (currentState == AppState::PLAYING && currentMatch && !currentMatch->isMatchOver()) {
+            Uint32 elapsed = SDL_GetTicks() - turnStartTime;
+            turnProgress = 1.0f - (elapsed / 30000.0f); // 30 seconds max
+            if (turnProgress < 0.0f) turnProgress = 0.0f;
+        }
+
         // --- Execute pending background tasks safely ---
         {
             std::lock_guard<std::mutex> lock(queueMutex);
@@ -543,8 +551,7 @@ int main(int argc, char* argv[]) {
         }
 
         // --- 3. Pass dt to the Render State ---
-        window.render(dt, currentState, currentMatch.get(), myIndex, myName, lobbyManager.getCode(), currentLobbyPlayers, publicLobbies, currentHostName, currentTargetScore, sortBySuit);
-        
+        window.render(dt, turnProgress, currentState, currentMatch.get(), myIndex, myName, lobbyManager.getCode(), currentLobbyPlayers, publicLobbies, currentHostName, currentTargetScore, sortBySuit);        
         // 4. Cap at ~60 FPS
         Uint32 frameTime = SDL_GetTicks() - frameStart;
         if (frameTime < 16) {

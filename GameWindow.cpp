@@ -306,7 +306,7 @@ void GameWindow::drawPixelUIBox(int x, int y, int w, int h, SDL_Color color, boo
     SDL_RenderFillRect(renderer, &rightB);
 }
 
-void GameWindow::render(float dt, AppState state, Match* match, int myIndex, const std::string& myName, const std::string& lobbyCode, const std::vector<PlayerInfo>& lobbyPlayers, const std::vector<PublicLobbyInfo>& publicLobbies, const std::string& hostName, int targetScore, bool sortBySuit) {
+void GameWindow::render(float dt, float turnProgress, AppState state, Match* match, int myIndex, const std::string& myName, const std::string& lobbyCode, const std::vector<PlayerInfo>& lobbyPlayers, const std::vector<PublicLobbyInfo>& publicLobbies, const std::string& hostName, int targetScore, bool sortBySuit) {
     
     // --- 1. RENDER BACKGROUND ---
     if (tableBackground) {
@@ -436,9 +436,6 @@ void GameWindow::render(float dt, AppState state, Match* match, int myIndex, con
         Card topCard = match->getTopCard();
         renderCard(topCard, LOGICAL_WIDTH / 2 - standardCardW / 2, LOGICAL_HEIGHT / 2 - standardCardH / 2, standardCardW, standardCardH);
 
-        std::string turnText = isMyTurn ? ">>> YOUR TURN <<<" : "Waiting for Player " + std::to_string(match->getCurrentPlayerIndex()) + "...";
-        renderText(turnText, LOGICAL_WIDTH / 2 - 150, LOGICAL_HEIGHT / 2 - 150, isMyTurn ? blue : white);
-
         std::string suitText = match->getDeclaredSuit();
         if (!suitText.empty()) renderText("ACTIVE SUIT: " + suitText, LOGICAL_WIDTH / 2 - 120, LOGICAL_HEIGHT / 2 + 120, white);
 
@@ -536,16 +533,23 @@ void GameWindow::render(float dt, AppState state, Match* match, int myIndex, con
             }
         }
 
-        // --- Visual Turn Timer ---
+        // --- VISIBILITY FIX: "Your Turn" Indicator ---
         if (isMyTurn) {
-            SDL_Rect timerBg = { LOGICAL_WIDTH / 2 - 150, LOGICAL_HEIGHT / 2 - 120, 300, 10 };
-            drawPixelUIBox(timerBg.x, timerBg.y, timerBg.w, timerBg.h, {0, 0, 0, 255}, false);
+            int boxW = 300, boxH = 50; // Slimmer, less extreme box
+            int boxX = (LOGICAL_WIDTH - boxW) / 2;
+            int boxY = LOGICAL_HEIGHT / 2 - 240; // Moved UP by 60 pixels
             
-            // Visual placeholder for the shrinking timer. 
-            // In the future, pass (timeLeft / totalTime) down from main.cpp to scale the 292 width.
-            SDL_Rect timerFill = { LOGICAL_WIDTH / 2 - 146, LOGICAL_HEIGHT / 2 - 116, 292, 2 }; 
-            SDL_SetRenderDrawColor(renderer, 255, 100, 50, 255);
-            SDL_RenderFillRect(renderer, &timerFill);
+            // Slower pulse (800ms) with a calming blue instead of emergency red
+            Uint32 pulse = (SDL_GetTicks() / 800) % 2; 
+            SDL_Color boxColor = pulse ? SDL_Color{60, 120, 210, 255} : SDL_Color{40, 90, 170, 255}; 
+            
+            drawPixelUIBox(boxX, boxY, boxW, boxH, boxColor, false);
+            
+            // Standard scale text, cleaner string
+            renderText("YOUR TURN", boxX, boxY + 8, white, true, boxW, 1.0f);
+        } else {
+            std::string turnText = "Waiting for Player " + std::to_string(match->getCurrentPlayerIndex()) + "...";
+            renderText(turnText, LOGICAL_WIDTH / 2 - 150, LOGICAL_HEIGHT / 2 - 220, white); // Moved this up slightly too
         }
 
         // --- Suit Selection Overlay ---
@@ -563,6 +567,22 @@ void GameWindow::render(float dt, AppState state, Match* match, int myIndex, con
             activeButtons.push_back({ {LOGICAL_WIDTH/2 + 20, LOGICAL_HEIGHT/2 - 50, 200, 80}, "Diamonds", red, [=](){pickSuit("Diamonds");} });
             activeButtons.push_back({ {LOGICAL_WIDTH/2 - 220, LOGICAL_HEIGHT/2 + 50, 200, 80}, "Spades", darkGray, [=](){pickSuit("Spades");} });
             activeButtons.push_back({ {LOGICAL_WIDTH/2 + 20, LOGICAL_HEIGHT/2 + 50, 200, 80}, "Clubs", darkGray, [=](){pickSuit("Clubs");} });
+        }
+        // --- VISUAL TURN TIMER POLISH ---
+        if (isMyTurn) {
+            // Moved UP to sit right under the new Your Turn box
+            SDL_Rect timerBg = { LOGICAL_WIDTH / 2 - 150, LOGICAL_HEIGHT / 2 - 175, 300, 14 }; 
+            drawPixelUIBox(timerBg.x, timerBg.y, timerBg.w, timerBg.h, {0, 0, 0, 255}, false);
+            
+            int currentWidth = (int)(292 * turnProgress);
+            SDL_Rect timerFill = { LOGICAL_WIDTH / 2 - 146, LOGICAL_HEIGHT / 2 - 171, currentWidth, 6 }; 
+            
+            SDL_Color timerColor = {50, 255, 50, 255}; // Green
+            if (turnProgress < 0.4f) timerColor = {255, 200, 50, 255}; // Yellow
+            if (turnProgress < 0.15f) timerColor = {255, 50, 50, 255}; // Red
+
+            SDL_SetRenderDrawColor(renderer, timerColor.r, timerColor.g, timerColor.b, timerColor.a);
+            SDL_RenderFillRect(renderer, &timerFill);
         }
     }
     else if (state == AppState::GAME_OVER && match) {
