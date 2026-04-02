@@ -1,32 +1,35 @@
-# Visual Studio / CMake
-.vs/
-out/
+# --- C++ / CMake Build Artifacts ---
 build/
-CMakeSettings.json
+out/
+CMakeCache.txt
+CMakeFiles/
+compile_commands.json
+*.log
+
+# --- Android Studio / Gradle ---
+.gradle/
+.idea/
+local.properties
+android/app/build/
+android/app/.cxx/
+android/.cxx/
+
+# --- Compiled Binaries & Packages ---
+*.apk
+*.aab
+*.exe
+*.dll
+*.so
+*.lib
+*.a
+*.pdb
+
+# --- Security (CRITICAL) ---
+*.jks
+*.keystore
 google-services.json
 
-# Compiled Object files
-*.slo
-*.lo
-*.o
-*.obj
-
-# Compiled Dynamic libraries
-*.so
-*.dylib
-
-# Compiled Static libraries
-*.lai
-*.la
-*.a
-*.lib
-
-# Executables
-*.out
-*.app
-*.dll
-*.exe
-
-
-# Firebase Desktop Cache (LevelDB lock files, etc.)
-AppData/
+# --- IDEs & OS Junk ---
+.vscode/
+.DS_Store
+Thumbs.db
