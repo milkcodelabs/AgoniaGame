@@ -464,27 +464,45 @@ int main(int argc, char* argv[]) {
                     lobbyManager.listenForMoves(networkMoveHandler);
                     currentState = AppState::PLAYING;
                 } else {
-                    auto deckRef = database->GetReference("lobbies").Child(lobbyManager.getCode()).Child("game_state").Child("deck");
-                    deckRef.GetValue().OnCompletion([&, networkMoveHandler](const firebase::Future<firebase::database::DataSnapshot>& future) {
-                        if (future.error() == 0 && future.result()->exists()) {
-                            
-                            std::vector<std::string> syncedDeck;
-                            int deckSize = (int)future.result()->children_count();
-                            for (int i = 0; i < deckSize; ++i) {
-                                auto cardVal = future.result()->Child(std::to_string(i)).value();
-                                if(cardVal.is_string()) syncedDeck.push_back(cardVal.string_value());
+                    std::cout << "[SYSTEM] Client waiting for host to upload deck...\n";
+
+                    auto checkDeckRef = std::make_shared<std::function<void()>>();
+                    *checkDeckRef = [&, checkDeckRef, networkMoveHandler]() {
+                        
+                        auto deckRef = database->GetReference("lobbies").Child(lobbyManager.getCode()).Child("game_state").Child("deck");
+                        
+                        deckRef.GetValue().OnCompletion([&, checkDeckRef, networkMoveHandler](const firebase::Future<firebase::database::DataSnapshot>& future) {
+                            if (future.error() == 0 && future.result()->exists()) {
+                                
+                                // DECK FOUND! Prepare the game.
+                                std::vector<std::string> syncedDeck;
+                                int deckSize = (int)future.result()->children_count();
+                                for (int i = 0; i < deckSize; ++i) {
+                                    auto cardVal = future.result()->Child(std::to_string(i)).value();
+                                    if(cardVal.is_string()) syncedDeck.push_back(cardVal.string_value());
+                                }
+                                
+                                runOnMainThread([&, syncedDeck, networkMoveHandler]() {
+                                    window.playSound(Sfx::SHUFFLE);
+                                    window.playSound(Sfx::START);
+                                    currentMatch->getDeck().loadFromSerialized(syncedDeck);
+                                    currentMatch->dealInitialCards();
+                                    lobbyManager.listenForMoves(networkMoveHandler);
+                                    currentState = AppState::PLAYING; 
+                                });
+                                
+                            } else {
+                                // DECK NOT READY YET! Wait 500ms and try again.
+                                std::thread([&, checkDeckRef]() {
+                                    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+                                    runOnMainThread(*checkDeckRef);
+                                }).detach();
                             }
-                            
-                            runOnMainThread([&, syncedDeck, networkMoveHandler]() {
-                                window.playSound(Sfx::SHUFFLE);
-                                window.playSound(Sfx::START);
-                                currentMatch->getDeck().loadFromSerialized(syncedDeck);
-                                currentMatch->dealInitialCards();
-                                lobbyManager.listenForMoves(networkMoveHandler);
-                                currentState = AppState::PLAYING; 
-                            });
-                        }
-                    });
+                        });
+                    };
+
+                    // Fire the first check!
+                    (*checkDeckRef)();
                 }
             }
         });
