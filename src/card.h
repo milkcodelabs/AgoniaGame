@@ -6,8 +6,6 @@ private:
     std::string value;
     std::string suit;
     int points;
-
-    // Helper to calculate points based on game rules
     int calculatePoints(const std::string& val);
 
 public:
@@ -17,7 +15,6 @@ public:
     std::string getSuit() const;
     int getPoints() const;
     
-    // Utilities for rendering and serialization
     std::string toString() const; 
     std::string getId() const;    
 };

@@ -5,7 +5,6 @@
 
 enum class Difficulty { BEGINNER, INTERMEDIATE, EXPERT };
 
-// New struct to hand the move back to main.cpp
 struct BotMoveData {
     std::string type; // "D" for draw, "P" for pass, or the string representation of the card index
     int cardIndex;    // -1 if D or P
@@ -22,7 +21,5 @@ private:
 
 public:
     AIBot(int index, Difficulty diff);
-    
-    // Now returns the exact move it made
-    BotMoveData takeTurn(Match& match); 
+        BotMoveData takeTurn(Match& match); 
 };

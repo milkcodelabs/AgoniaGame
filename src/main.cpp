@@ -1,7 +1,7 @@
 #ifdef __ANDROID__
     #include <jni.h>
     #include "SDL.h"
-    #include <android/log.h> // Ensures we have access to SDL_AndroidGetJNIEnv
+    #include <android/log.h> 
 #endif
 
 #include <iostream>
@@ -38,8 +38,6 @@ int main(int argc, char* argv[]) {
 #else
     std::cout << "Initializing Firebase...\n";
 #endif
-
-    // 1. Manually configure the options
     firebase::AppOptions options;
     options.set_app_id("1:553280452101:android:9f3251b8b14ec5b476ce6c"); 
     options.set_api_key("AIzaSyB6Htx5s6xBhEoLC_BjrRH_nspCEMaRBNY");     
@@ -49,7 +47,6 @@ int main(int argc, char* argv[]) {
     firebase::App* app = nullptr;
 
 #ifdef __ANDROID__
-    // 2a. ANDROID: Ask SDL for the OS hooks, then pass them to Firebase
     JNIEnv* env = (JNIEnv*)SDL_AndroidGetJNIEnv();
     jobject activity = (jobject)SDL_AndroidGetActivity();
     
@@ -166,8 +163,10 @@ int main(int argc, char* argv[]) {
                 }
             });
         }
+        else if (choice == 5) { 
+            currentState = AppState::RULES; 
+        }
         else if (choice == -1) {
-            // If we are returning from ANY multiplayer state, nuke everything.
             if (currentState == AppState::LOBBY || currentState == AppState::PLAYING || currentState == AppState::GAME_OVER) {
                 lobbyManager.leaveLobby();
                 currentMatch.reset(); 
@@ -178,8 +177,31 @@ int main(int argc, char* argv[]) {
     };
 
     window.onJoinCodeEntered = [&](std::string code) {
-        lobbyManager.joinLobby(code, myName);
-        currentState = AppState::LOBBY;
+        // 1. Show loading state on the UI
+        window.joinErrorMessage = "Checking...";
+
+        // 2. Query Firebase to see if the lobby actually exists
+        database->GetReference("lobbies").Child(code).GetValue().OnCompletion(
+            [&, code](const firebase::Future<firebase::database::DataSnapshot>& result) {
+                
+                // 3. Push the result back to the Main Thread so we don't crash SDL
+                runOnMainThread([&, result, code]() {
+                    if (result.error() == 0) {
+                        if (result.result()->exists()) {
+                            // LOBBY EXISTS! Proceed with joining
+                            window.joinErrorMessage = ""; 
+                            lobbyManager.joinLobby(code, myName);
+                            currentState = AppState::LOBBY;
+                        } else {
+                            window.joinErrorMessage = "Error: Lobby not found!";
+                        }
+                    } else {
+                        // NETWORK ERROR
+                        window.joinErrorMessage = "Network Error: Could not connect.";
+                    }
+                });
+            }
+        );
     };
 
     window.onFillBotsClicked = [&]() {
@@ -201,21 +223,16 @@ int main(int argc, char* argv[]) {
             
             std::string cardId = playedCard.getValue() + "|" + playedCard.getSuit();
 
-            // 1. Check EXACTLY why a move might be invalid before doing anything else
             std::string errorMsg = currentMatch->getInvalidReason(playedCard);
 
             if (!errorMsg.empty()) {
-                // Move is illegal. Tell them exactly why. 
-                // (This automatically plays Sfx::FAIL based on our last update!)
                 window.triggerNotification(errorMsg);
             } 
             else if (playedCard.getValue() == "A") {
-                // Move is legal AND it's an Ace. Now it's safe to open the menu.
                 pendingCardIndex = cardIndex;
                 window.triggerSuitSelection(); 
             } 
             else {
-                // Move is legal and a normal card. Play it.
                 bool success = currentMatch->attemptPlayCard(cardIndex, "");
                 if (success) {
                     lobbyManager.pushMove(myIndex, cardId, cardIndex, currentMatch->getDeclaredSuit());
@@ -236,7 +253,6 @@ int main(int argc, char* argv[]) {
                 lobbyManager.syncTurnState(*currentMatch);
                 window.clearCardSelection(); 
             } else {
-                // THE FIX: Catch the invalid move (like Ace on Ace) and alert the player!
                 window.triggerNotification("Invalid move! You cannot play an Ace on an Ace.");
                 window.clearCardSelection(); 
             }
@@ -385,49 +401,55 @@ int main(int argc, char* argv[]) {
                 
                 currentMatch = std::make_unique<Match>(playerNames);
 
-                // --- BIND NEW ANIMATION EVENTS TO THE MATCH ---
                 currentMatch->onCardPlayedEvent = [&](int pIdx, Card card) {
                     window.playSound(Sfx::PLAY_CARD);
-                    float startX = 1920 / 2.0f, startY = 1080 / 2.0f; // Default center
-                    float targetX = 1920 / 2.0f - 75.0f, targetY = 1080 / 2.0f - 100.0f; // Pile coordinates
+                    
+                    float pileX = 1920 / 2.0f + 20.0f;
+                    float pileY = 1080 / 2.0f - 90.0f - 40.0f; 
+                    
+                    float startX = 1920 / 2.0f, startY = 1080 / 2.0f; 
+                    float targetX = pileX, targetY = pileY;
 
-                    if (pIdx == -1) { // -1 signifies the Deck (Dealer)
-                        startX = 1920 / 2.0f - 300.0f;
+                    if (pIdx == -1) { 
+                        startX = 1920 / 2.0f - 126.0f - 20.0f;
+                        startY = pileY;
                     } else {
                         int numPlayers = currentMatch->getPlayers().size();
                         int relativePos = (pIdx - myIndex + numPlayers) % numPlayers;
                         
-                        // Calculate position based on relative location
-                        if (relativePos == 0)      { startY = 1080.0f - 180.0f; } // Bottom
+                        if (relativePos == 0)      { startX = 1920/2.0f; startY = 1080.0f - 180.0f; } // Bottom
                         else if ((numPlayers == 2 && relativePos == 1) || (numPlayers == 4 && relativePos == 2)) 
-                                                   { startY = 50.0f; } // Top
+                                                   { startX = 1920/2.0f; startY = 130.0f; } // Top
                         else if (numPlayers >= 3 && relativePos == 1) 
-                                                   { startX = 50.0f; } // Left
-                        else                       { startX = 1920.0f - 150.0f; } // Right
+                                                   { startX = 50.0f; startY = 1080/2.0f; } // Left
+                        else                       { startX = 1920.0f - 150.0f; startY = 1080/2.0f; } // Right
                     }
                     window.triggerAnimation(card, startX, startY, targetX, targetY);
                 };
 
                 currentMatch->onCardDrawnEvent = [&](int pIdx) {
                     window.playSound(Sfx::DRAW);
-                    float startX = 1920 / 2.0f - 300.0f, startY = 1080 / 2.0f; // Deck coordinates
+                    
+                    // Match the actual physical deck layout
+                    float deckX = 1920 / 2.0f - 126.0f - 20.0f;
+                    float deckY = 1080 / 2.0f - 90.0f - 40.0f;
+                    
+                    float startX = deckX, startY = deckY; 
                     float targetX = 1920 / 2.0f, targetY = 1080 / 2.0f;
 
                     int numPlayers = currentMatch->getPlayers().size();
                     int relativePos = (pIdx - myIndex + numPlayers) % numPlayers;
                     
-                    if (relativePos == 0)      { targetY = 1080.0f - 180.0f; } // Bottom
+                    if (relativePos == 0)      { targetX = 1920/2.0f; targetY = 1080.0f - 180.0f; } // Bottom
                     else if ((numPlayers == 2 && relativePos == 1) || (numPlayers == 4 && relativePos == 2)) 
-                                               { targetY = 50.0f; } // Top
+                                               { targetX = 1920/2.0f; targetY = 130.0f; } // Top
                     else if (numPlayers >= 3 && relativePos == 1) 
-                                               { targetX = 50.0f; } // Left
-                    else                       { targetX = 1920.0f - 150.0f; } // Right
+                                               { targetX = 50.0f; targetY = 1080/2.0f; } // Left
+                    else                       { targetX = 1920.0f - 150.0f; targetY = 1080/2.0f; } // Right
 
-                    // Create a generic card back to slide across the screen
                     Card dummyCard("0", "Hidden"); 
                     window.triggerAnimation(dummyCard, startX, startY, targetX, targetY);
                 };
-                // ----------------------------------------------
 
                 if (lobbyManager.isLocalHost()) {
                     window.playSound(Sfx::SHUFFLE);

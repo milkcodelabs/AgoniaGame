@@ -58,7 +58,7 @@ void Player::setHasDrawnThisTurn(bool drawn) { hasDrawnThisTurn = drawn; }
 
 void Player::passTurn() {
     state = "passed";
-    hasDrawnThisTurn = false; // Reset for the next time it's their turn
+    hasDrawnThisTurn = false;
 }
 
 bool Player::hasEmptyHand() const { return hand.empty(); }

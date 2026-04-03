@@ -19,11 +19,9 @@ LobbyManager::LobbyManager(firebase::database::Database* database) : db(database
         LobbyData data;
         data.code = currentLobbyCode;
         
-        // --- THE FIX: Safe Parsing to prevent Null Variant Crashes ---
         auto statusVal = snapshot.Child("status").value();
         data.status = statusVal.is_string() ? statusVal.string_value() : "";
         
-        // If status is empty, it means the lobby is a "Husk" (partially deleted). Treat as deleted.
         if (data.status.empty()) {
             LobbyData deletedData;
             deletedData.status = "deleted";
@@ -91,7 +89,6 @@ void LobbyManager::createLobby(const std::string& playerName, bool isPrivate) {
     lobbyInit["target_score"] = 50;
 
     currentLobbyRef.SetValue(lobbyInit).OnCompletion([this, playerName](const firebase::Future<void>&) {
-        // After creating, join yourself to the players list
         myPlayerRef = currentLobbyRef.Child("players").PushChild();
         std::map<std::string, firebase::Variant> pData;
         pData["name"] = playerName;
@@ -125,7 +122,7 @@ void LobbyManager::findPublicLobbies() {
     std::cout << "\nSearching for open games...\n";
     db->GetReference("lobbies")
       .OrderByChild("status")
-      .EqualTo("waiting") // Safer than querying the boolean
+      .EqualTo("waiting")
       .GetValue()
       .OnCompletion([](const firebase::Future<firebase::database::DataSnapshot>& done) {
           if (done.error() == 0 && done.result()->exists()) {
@@ -143,7 +140,7 @@ void LobbyManager::findPublicLobbies() {
           } else {
               std::cout << "No open lobbies right now.\n";
           }
-          std::cout << "\nSelection: "; // Re-print prompt so the UI doesn't look frozen
+          std::cout << "\nSelection: ";
       });
 }
 
@@ -157,8 +154,7 @@ void LobbyManager::fillWithBots(int currentCount) {
         auto botRef = currentLobbyRef.Child("players").PushChild();
         std::map<std::string, firebase::Variant> bData;
         
-        // This names them dynamically based on how many players are already there
-        bData["name"] = "Bot " + std::to_string(currentCount + i); 
+        bData["name"] = "Player " + std::to_string(currentCount + i); 
         bData["is_bot"] = true;
         bData["difficulty"] = "moderate";
         
@@ -233,7 +229,6 @@ void LobbyManager::syncTurnState(const Match& match) {
 
 void LobbyManager::leaveLobby() {
     if (currentLobbyRef.is_valid()) {
-        // THE FIX: Detach the listeners so they don't crash in the background
         currentLobbyRef.RemoveValueListener(&listener);
         currentLobbyRef.Child("game_state").Child("moves").RemoveChildListener(&moveListener);
         

@@ -31,20 +31,17 @@ void Match::dealInitialCards() {
     Card firstCard = deck.drawCard();
     table = new Table(firstCard);
     
-    // ANIMATION HOOK: Dealer flips the first card to the table. 
-    // We pass -1 as the playerIndex to signify it came from the deck.
     if (onCardPlayedEvent) onCardPlayedEvent(-1, firstCard);
     
     declaredSuit = "";
 }
 
 void Match::reshuffleDiscardPile() {
-    matchSeed += 1; // Increment so it's different from the initial shuffle
+    matchSeed += 1;
     Card topCard = table->getTopCard();
     std::vector<Card> recycled = table->takeDiscardPile();
     deck.addCards(recycled);
     
-    // THE BUG FIX: Deterministic Reshuffle
     deck.shuffle(matchSeed); 
     std::cout << "[SYSTEM] Deck exhausted. Discard pile reshuffled with seed: " << matchSeed << "\n";
 }
@@ -56,7 +53,6 @@ void Match::safeDraw(Player& p) {
     if (!deck.isEmpty()) {
         Card drawnCard = deck.drawCard();
         
-        // ANIMATION HOOK: A card is moving from the Deck to a Player's hand
         if (onCardDrawnEvent) onCardDrawnEvent(p.getIndex());
         
         p.drawCard(drawnCard);
@@ -64,6 +60,7 @@ void Match::safeDraw(Player& p) {
 }
 
 std::string Match::getInvalidReason(const Card& c) const {
+   
     Card top = table->getTopCard();
     
     // If caught in a 7s chain, you MUST play a 7
@@ -82,6 +79,7 @@ std::string Match::getInvalidReason(const Card& c) const {
     // If an Ace was previously played, match the declared suit 
     if (!declaredSuit.empty()) {
         if (c.getSuit() != declaredSuit) return "You must match the active suit: " + declaredSuit + "!";
+        return ""; 
     }
     
     // Standard match by value or suit
@@ -98,6 +96,7 @@ void Match::advanceTurn(int steps) {
 }
 
 bool Match::isValidMove(const Card& c) const {
+    //GAME RULES:
     Card top = table->getTopCard();
     
     // If caught in a 7s chain, you MUST play a 7
@@ -128,9 +127,6 @@ bool Match::attemptPlayCard(int cardIndex, std::string newSuit) {
     
     Card toPlay = current.getHand()[cardIndex];
     if (!isValidMove(toPlay)) return false;
-    
-    // ANIMATION HOOK: Trigger this BEFORE the card is removed from the player's hand memory, 
-    // so the UI knows exactly what card was played and who played it.
     if (onCardPlayedEvent) onCardPlayedEvent(currentPlayerIndex, toPlay);
     
     // Move is valid, execute play
@@ -149,7 +145,7 @@ bool Match::attemptPlayCard(int cardIndex, std::string newSuit) {
     } else if (val == "8") {
         stepsToAdvance = 0; // Player plays again 
     } else if (val == "9") {
-        stepsToAdvance = 2; // Skips next player. Works perfectly for 2 or 4 players 
+        stepsToAdvance = 2; // skips next player. Works perfectly for 2 or 4 players 
     }
     
     // Check ending constraints: Cannot go out on a special card 
@@ -230,6 +226,6 @@ void Match::resetForNextRound(unsigned int newSeed) {
         table = nullptr;
     }
 
-    // 4. Deal fresh cards!
+    // 4. Deal fresh cards
     dealInitialCards();
 }

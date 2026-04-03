@@ -23,7 +23,7 @@ int AIBot::findBestMove(Match& match, const std::vector<Card>& hand) {
 
     for (size_t i = 0; i < hand.size(); ++i) {
         if (match.isValidMove(hand[i])) {
-            int moveScore = hand[i].getPoints(); // Base score: we want to shed high points
+            int moveScore = hand[i].getPoints(); // Base score: shed high points
             std::string val = hand[i].getValue();
 
             // Strategic Adjustments

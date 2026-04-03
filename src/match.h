@@ -33,13 +33,12 @@ public:
     bool isValidMove(const Card& c) const;
     std::string getInvalidReason(const Card& c) const;
     
-    // Core Actions for the Console to call
+
     bool attemptPlayCard(int cardIndex, std::string newSuit = "");
-    bool attemptDrawPenalty(); // For when a player is hit by 7s
+    bool attemptDrawPenalty(); 
     bool attemptDraw();
     bool attemptPass();
     
-    // Getters for Console UI
     Player& getCurrentPlayer();
     int getCurrentPlayerIndex() const { return currentPlayerIndex.load(); }
     Card getTopCard() const;
@@ -50,7 +49,7 @@ public:
     
     void endMatchPointsCalc();
     Player& getPlayer(int index) { return players[index]; }
-    // --- NEW: Post-Match Loop & Deterministic RNG ---
+
     void setSeed(unsigned int seed) { matchSeed = seed; }
     void resetForNextRound(unsigned int newSeed);
 

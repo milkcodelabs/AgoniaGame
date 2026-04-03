@@ -7,7 +7,7 @@ class Player {
 private:
     std::string name;
     int turnOrder;
-    std::string state; // "played", "passed", "hasn't played", "missed turn"
+    std::string state;
     int score;
     std::vector<Card> hand;
     bool hasDrawnThisTurn;
@@ -24,7 +24,7 @@ public:
     void setState(const std::string& s);
     
     void drawCard(Card c);
-    Card playCard(int index); // Removes and returns the card from hand
+    Card playCard(int index);
     const std::vector<Card>& getHand() const;
     
     bool getHasDrawnThisTurn() const;

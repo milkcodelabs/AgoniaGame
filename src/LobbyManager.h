@@ -45,7 +45,6 @@ private:
     LobbyValueListener listener;
     std::string generateRandomCode(int length = 4);
 
-    // THE BUG FIX: Change "ChildEventListener" to just "ChildListener"
     class MoveChildListener : public firebase::database::ChildListener {
     public:
         std::function<void(int, std::string, int, std::string)> onMove;
@@ -53,7 +52,6 @@ private:
         void OnChildAdded(const firebase::database::DataSnapshot& snapshot, const char* previous_sibling) override {
             if (!snapshot.exists() || !snapshot.has_children()) return;
             
-            // Safe parsing for Firebase numbers
             auto pVal = snapshot.Child("player").value();
             int pIdx = pVal.is_int64() ? (int)pVal.int64_value() : (pVal.is_double() ? (int)pVal.double_value() : -1);
             

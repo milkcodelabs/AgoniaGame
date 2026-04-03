@@ -17,6 +17,7 @@ enum class AppState {
     JOIN_INPUT,
     FIND_LOBBY,      // State for finding public games
     LOBBY,
+    RULES,
     PLAYING,
     SUIT_SELECTION,  // Extracted as an explicit UI layer
     GAME_OVER
@@ -50,7 +51,6 @@ struct PublicLobbyInfo {
     int playerCount;
 };
 
-// --- NEW: Animation Struct for Delta Time Interpolation ---
 struct CardAnim {
     Card card;
     float startX, startY;
@@ -68,8 +68,8 @@ public:
     bool isRunning() const { return running; }
     bool isLoadingNextRound = false; // UI Lock flag
     bool isTextBoxFocused = false;
+    bool isMuted = false;
     
-    // myIndex added so the UI knows exactly who the local player is
     void processInput(AppState& state, Match* match, int myIndex);
 
     void render(float dt, float turnProgress, AppState state, Match* match, int myIndex, const std::string& myName, const std::string& lobbyCode, const std::vector<PlayerInfo>& lobbyPlayers, const std::vector<PublicLobbyInfo>& publicLobbies, const std::string& hostName, int targetScore, bool sortBySuit);
@@ -90,6 +90,8 @@ public:
     std::function<void()> onPassClicked;
     std::function<void()> onNextRoundClicked;
 
+    std::string joinErrorMessage = "";
+
     void triggerSuitSelection() { needsSuitSelection = true; }
     
     // UI Notification System
@@ -102,7 +104,6 @@ public:
     // Clears the selected card (e.g., when a turn ends)
     void clearCardSelection() { selectedCardIndex = -1; }
 
-    // --- NEW: Public animation trigger ---
     void triggerAnimation(const Card& card, float startX, float startY, float targetX, float targetY) {
         activeAnimations.push_back({card, startX, startY, targetX, targetY, 0.0f, 3.0f});
     }
@@ -113,7 +114,6 @@ private:
     void renderButton(const UIButton& btn);
     std::string getSuitSymbol(const std::string& suit);
 
-    // --- NEW: Helper Functions for Sprites and Pixel UI ---
     SDL_Rect getCardSourceRect(const Card& card);
     void drawPixelUIBox(int x, int y, int w, int h, SDL_Color color, bool isHovered);
 
@@ -121,7 +121,6 @@ private:
     SDL_Renderer* renderer = nullptr;
     TTF_Font* font = nullptr;
     
-    // --- NEW: Textures and Animation State ---
     SDL_Texture* cardSpriteSheet = nullptr;
     SDL_Texture* tableBackground = nullptr;
     std::vector<CardAnim> activeAnimations;

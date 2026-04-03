@@ -6,16 +6,13 @@ IDI_ICON1 ICON "../assets/agonia.ico"
 
 // --- 2. EXECUTABLE VERSION INFORMATION ---
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION 0,5,0,0        // The actual version of this specific file build
- PRODUCTVERSION 0,5,0,0     // The overall version of the game
+ FILEVERSION 1,0,0,0        
+ PRODUCTVERSION 1,0,0,0     
  FILEFLAGSMASK VS_FFI_FILEFLAGSMASK
-#ifdef _DEBUG
- FILEFLAGS VS_FF_DEBUG      // Flags it as a debug build if compiling in debug mode
-#else
- FILEFLAGS 0x0L             // Standard release flag
+ FILEFLAGS 0x0L             
 #endif
- FILEOS VOS_NT_WINDOWS32    // Tells the OS this is a standard 32/64-bit Windows app
- FILETYPE VFT_APP           // VFT_APP = Application (.exe). (VFT_DLL would be for libraries)
+ FILEOS VOS_NT_WINDOWS32    
+ FILETYPE VFT_APP    
  FILESUBTYPE VFT2_UNKNOWN
 BEGIN
     BLOCK "StringFileInfo"
@@ -26,7 +23,7 @@ BEGIN
         BEGIN
             VALUE "CompanyName",      "milkcodelabs\0"
             VALUE "FileDescription",  "Agonia Online Multiplayer Card Game\0"
-            VALUE "FileVersion",      "0.5.0.0\0"
+            VALUE "FileVersion",      "1.0.0.0\0"
             VALUE "InternalName",     "AgoniaGame\0"
             VALUE "LegalCopyright",   "Copyright (C) 2026 Michail Michailidis. All rights reserved.\0"
             VALUE "OriginalFilename", "AgoniaGame.exe\0"
@@ -36,7 +33,6 @@ BEGIN
     END
     BLOCK "VarFileInfo"
     BEGIN
-        // Must match the language block above (0x0409, 1252)
         VALUE "Translation", 0x409, 1252 
     END
 END

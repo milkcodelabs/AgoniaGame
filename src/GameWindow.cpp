@@ -4,6 +4,11 @@
 #include <algorithm>
 #include <string>
 
+
+// --- SCROLL STATE ---
+static float rulesScrollY = 0.0f;
+static float rulesMaxScroll = 0.0f;
+
 // --- ANDROID ASSET PATHING MACRO ---
 #ifdef __ANDROID__
     const std::string ASSET_PATH = "";
@@ -12,6 +17,8 @@
 #endif
 
 void GameWindow::playSound(Sfx sound) {
+    if (isMuted) return; // THE FIX: Respect the mute button!
+    
     if (sounds.count(sound) && sounds[sound]) {
         Mix_PlayChannel(-1, sounds[sound], 0);
     }
@@ -53,6 +60,7 @@ bool GameWindow::init() {
 
     SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "0");
     SDL_SetHint(SDL_HINT_MOUSE_TOUCH_EVENTS, "0");
+    SDL_SetHint(SDL_HINT_IDLE_TIMER_DISABLED, "1");
     
     if (!(IMG_Init(IMG_INIT_PNG) & IMG_INIT_PNG)) {
         std::cerr << "Failed to initialize SDL_image: " << IMG_GetError() << "\n";
@@ -151,7 +159,6 @@ void GameWindow::processInput(AppState& state, Match* match, int myIndex) {
     float scaleY = (float)h / LOGICAL_HEIGHT;
     float scale = (std::min)(scaleX, scaleY); 
     
-    // Calculate exactly how many pixels the 16:9 view takes up on the screen
     int viewW = (int)(LOGICAL_WIDTH * scale);
     int viewH = (int)(LOGICAL_HEIGHT * scale);
     int viewX = (w - viewW) / 2;
@@ -160,11 +167,10 @@ void GameWindow::processInput(AppState& state, Match* match, int myIndex) {
     int kbOffsetY = 0;
 #ifdef __ANDROID__
     if ((state == AppState::NAME_INPUT || state == AppState::JOIN_INPUT) && isTextBoxFocused) {
-        kbOffsetY = (int)(250 * scale); // Scale the keyboard push to physical pixels too!
+        kbOffsetY = (int)(250 * scale); 
     }
 #endif
 
-    // Track global mouse
     int rawMouseX, rawMouseY;
     SDL_GetMouseState(&rawMouseX, &rawMouseY);
     mouseX = (int)((rawMouseX - viewX) / scale);
@@ -181,55 +187,110 @@ void GameWindow::processInput(AppState& state, Match* match, int myIndex) {
             Mix_Resume(-1);
             Mix_ResumeMusic();
         }
-
         // --- TEXT INPUT HANDLING ---
-        if (state == AppState::NAME_INPUT || state == AppState::JOIN_INPUT) {
-            if (event.type == SDL_TEXTINPUT) {
-                if (currentTextInput.length() < 15) currentTextInput += event.text.text;
-            } else if (event.type == SDL_KEYDOWN) {
+        else if (event.type == SDL_TEXTINPUT) {
+            if (isTextBoxFocused) {
+                if (state == AppState::NAME_INPUT && currentTextInput.length() < 15) {
+                    currentTextInput += event.text.text;
+                } 
+                else if (state == AppState::JOIN_INPUT && currentTextInput.length() < 4) {
+                    std::string inputStr = event.text.text;
+                    for (char& c : inputStr) c = toupper(c); 
+                    currentTextInput += inputStr;
+                }
+            }
+        }
+        else if (event.type == SDL_KEYDOWN) {
+            if (isTextBoxFocused) {
                 if (event.key.keysym.sym == SDLK_BACKSPACE && currentTextInput.length() > 0) {
                     currentTextInput.pop_back();
-                } else if (event.key.keysym.sym == SDLK_RETURN && currentTextInput.length() > 0) {
-                    
-                    // FORCE KEYBOARD CLOSED ON SUBMIT
-                    isTextBoxFocused = false;
-                    SDL_StopTextInput();
-
-                    if (state == AppState::NAME_INPUT && onNameEntered) {
-                        SDL_SetWindowTitle(window, ("Agonia user:" + currentTextInput).c_str());
+                } 
+                else if (event.key.keysym.sym == SDLK_RETURN || event.key.keysym.sym == SDLK_KP_ENTER) {
+                    if (state == AppState::NAME_INPUT && currentTextInput.length() > 0 && onNameEntered) {
+                        isTextBoxFocused = false;
+                        SDL_StopTextInput();
                         onNameEntered(currentTextInput);
                         currentTextInput = "";
-                    } else if (state == AppState::JOIN_INPUT && onJoinCodeEntered) {
+                    } 
+                    else if (state == AppState::JOIN_INPUT && currentTextInput.length() == 4 && onJoinCodeEntered) {
+                        isTextBoxFocused = false;
+                        SDL_StopTextInput();
                         onJoinCodeEntered(currentTextInput);
-                        currentTextInput = "";
                     }
                 }
+            }
+            if (event.key.keysym.sym == SDLK_AC_BACK || event.key.keysym.sym == SDLK_ESCAPE) {
+                if (state == AppState::MAIN_MENU) {
+                    running = false; // Exit the app if on the home screen
+                } else {
+                    // Act as a universal "Back / Exit" button
+                    if (onMenuOptionSelected) onMenuOptionSelected(-1);
+                    if (state == AppState::RULES) rulesScrollY = 0.0f; // Reset scroll
+                    needsSuitSelection = false; // Close Ace menu if open
+                }
+            }
+        }
+        // --- SCROLLING LOGIC ---
+        else if (event.type == SDL_MOUSEWHEEL) {
+            if (state == AppState::RULES) {
+                rulesScrollY += event.wheel.y * 50.0f; // Scroll speed
+                if (rulesScrollY > 0.0f) rulesScrollY = 0.0f;
+                if (rulesScrollY < -rulesMaxScroll) rulesScrollY = -rulesMaxScroll;
+            }
+        }
+        else if (event.type == SDL_FINGERMOTION) {
+            if (state == AppState::RULES) {
+                // event.tfinger.dy is a normalized percentage, multiply by height for physical pixels
+                rulesScrollY += (event.tfinger.dy * h) * 1.5f; 
+                if (rulesScrollY > 0.0f) rulesScrollY = 0.0f;
+                if (rulesScrollY < -rulesMaxScroll) rulesScrollY = -rulesMaxScroll;
             }
         }
 
         // --- TOUCH / MOUSE HANDLING ---
+        static Uint32 lastClickTime = 0; 
         bool isClick = false;
         int inputX = 0, inputY = 0;
 
         if (event.type == SDL_MOUSEBUTTONDOWN && event.button.button == SDL_BUTTON_LEFT) {
-            isClick = true; 
-            inputX = (int)((event.button.x - viewX) / scale);
-            inputY = (int)((event.button.y - viewY + kbOffsetY) / scale);
+            if (event.button.which != SDL_TOUCH_MOUSEID) {
+                if (SDL_GetTicks() - lastClickTime > 250) {
+                    isClick = true; 
+                    inputX = (int)((event.button.x - viewX) / scale);
+                    inputY = (int)((event.button.y - viewY + kbOffsetY) / scale);
+                    lastClickTime = SDL_GetTicks();
+                }
+            }
         } else if (event.type == SDL_FINGERDOWN) {
-            int rawX = (int)(event.tfinger.x * w);
-            int rawY = (int)(event.tfinger.y * h);
-            isClick = true; 
-            inputX = (int)((rawX - viewX) / scale); 
-            inputY = (int)((rawY - viewY + kbOffsetY) / scale);
+            if (SDL_GetTicks() - lastClickTime > 250) {
+                int rawX = (int)(event.tfinger.x * w);
+                int rawY = (int)(event.tfinger.y * h);
+                
+                if (rawX >= viewX && rawX <= viewX + viewW && rawY >= viewY && rawY <= viewY + viewH) {
+                    isClick = true; 
+                    inputX = (int)((rawX - viewX) / scale); 
+                    inputY = (int)((rawY - viewY + kbOffsetY) / scale);
+                    lastClickTime = SDL_GetTicks();
+                }
+            }
         }
 
         if (isClick) {
             SDL_Point clickPoint = { inputX, inputY };
             bool actionHandled = false;
 
-            // --- KEYBOARD TRIGGERING ---
+            float ui = 1.0f;
+#ifdef __ANDROID__
+            ui = 1.6f; 
+#endif
+
+            // --- KEYBOARD TRIGGERING (Hitboxes) ---
             if (state == AppState::NAME_INPUT) {
-                SDL_Rect inputBox = {LOGICAL_WIDTH/2 - 200, LOGICAL_HEIGHT/2, 400, 60};
+                int panelH = (int)(450 * ui);
+                int menuPanelY = LOGICAL_HEIGHT / 2 - panelH / 2;
+                int bw = (int)(400 * ui), bh = (int)(70 * ui);
+                SDL_Rect inputBox = {LOGICAL_WIDTH/2 - bw/2, menuPanelY + 240, bw, bh};
+                
                 if (SDL_PointInRect(&clickPoint, &inputBox)) {
                     isTextBoxFocused = true;
                     SDL_StartTextInput(); 
@@ -238,7 +299,8 @@ void GameWindow::processInput(AppState& state, Match* match, int myIndex) {
                     SDL_StopTextInput();  
                 }
             } else if (state == AppState::JOIN_INPUT) {
-                SDL_Rect inputBox = {LOGICAL_WIDTH/2 - 100, LOGICAL_HEIGHT/2, 200, 60};
+                int bw = (int)(200 * ui), bh = (int)(60 * ui);
+                SDL_Rect inputBox = {LOGICAL_WIDTH/2 - bw/2, LOGICAL_HEIGHT/2, bw, bh};
                 if (SDL_PointInRect(&clickPoint, &inputBox)) {
                     isTextBoxFocused = true;
                     SDL_StartTextInput();
@@ -262,8 +324,25 @@ void GameWindow::processInput(AppState& state, Match* match, int myIndex) {
             if (!actionHandled && state == AppState::PLAYING && match && !needsSuitSelection) {
                 bool isMyTurn = (match->getCurrentPlayerIndex() == myIndex);
                 if (isMyTurn) {
-                    SDL_Rect pileRect = { LOGICAL_WIDTH / 2 - 75, LOGICAL_HEIGHT / 2 - 100, 150, 200 };
-                    if (SDL_PointInRect(&clickPoint, &pileRect) && selectedCardIndex != -1) {
+                    int standardCardW = 126;
+                    int standardCardH = 180;
+#ifdef __ANDROID__
+                    standardCardW = 168; 
+                    standardCardH = 240; 
+#endif
+                    int deckX = LOGICAL_WIDTH / 2 - standardCardW - 20;
+                    int deckY = LOGICAL_HEIGHT / 2 - standardCardH / 2 - (int)(40 * ui);
+                    int pileX = LOGICAL_WIDTH / 2 + 20;
+
+                    SDL_Rect deckRect = { deckX, deckY, standardCardW, standardCardH };
+                    SDL_Rect pileRect = { pileX, deckY, standardCardW, standardCardH };
+
+                    if (SDL_PointInRect(&clickPoint, &deckRect)) {
+                        if (onDrawClicked) onDrawClicked();
+                        actionHandled = true;
+                    }
+
+                    if (!actionHandled && SDL_PointInRect(&clickPoint, &pileRect) && selectedCardIndex != -1) {
                         if (onCardPlayed) onCardPlayed(selectedCardIndex);
                         selectedCardIndex = -1;
                         actionHandled = true;
@@ -288,8 +367,6 @@ void GameWindow::processInput(AppState& state, Match* match, int myIndex) {
         }
     }
 
-    // --- AGGRESSIVE KEYBOARD FAILSAFE ---
-    // Runs at the end of the frame to catch any state changes caused by buttons
     if (state != AppState::NAME_INPUT && state != AppState::JOIN_INPUT) {
         if (isTextBoxFocused) {
             isTextBoxFocused = false;
@@ -300,34 +377,35 @@ void GameWindow::processInput(AppState& state, Match* match, int myIndex) {
 
 void GameWindow::render(float dt, float turnProgress, AppState state, Match* match, int myIndex, const std::string& myName, const std::string& lobbyCode, const std::vector<PlayerInfo>& lobbyPlayers, const std::vector<PublicLobbyInfo>& publicLobbies, const std::string& hostName, int targetScore, bool sortBySuit) {
     
-    // --- UPDATED SAFE ZONE CALCULATION ---
+    // --- TRUE PHYSICAL SAFE ZONE MATH ---
+    // (This guarantees viewX is defined for the Ace UI bleed later!)
     int w, h;
     SDL_GetWindowSize(window, &w, &h);
     float scaleX = (float)w / LOGICAL_WIDTH;
     float scaleY = (float)h / LOGICAL_HEIGHT;
     float scale = (std::min)(scaleX, scaleY);
-    SDL_RenderSetScale(renderer, scale, scale);
-
-    int virtualW = (int)(w / scale);
-    int virtualH = (int)(h / scale);
-    int safeX = (virtualW - LOGICAL_WIDTH) / 2;
-    int safeY = (virtualH - LOGICAL_HEIGHT) / 2;
+    
+    int viewW = (int)(LOGICAL_WIDTH * scale);
+    int viewH = (int)(LOGICAL_HEIGHT * scale);
+    int viewX = (w - viewW) / 2;
+    int viewY = (h - viewH) / 2;
 
     int kbOffsetY = 0;
 #ifdef __ANDROID__
     if ((state == AppState::NAME_INPUT || state == AppState::JOIN_INPUT) && isTextBoxFocused) {
-        kbOffsetY = 250;
+        kbOffsetY = (int)(250 * scale);
     }
 #endif
 
-    // --- 1. RENDER BACKGROUND (Full Bleed) ---
+    // --- 1. RENDER BACKGROUND (Pinned to Screen) ---
     SDL_RenderSetViewport(renderer, NULL); 
+    SDL_RenderSetScale(renderer, 1.0f, 1.0f); 
     
     if (tableBackground) {
         int texW, texH;
         SDL_QueryTexture(tableBackground, NULL, NULL, &texW, &texH);
         
-        float screenAspect = (float)virtualW / virtualH;
+        float screenAspect = (float)w / h;
         float texAspect = (float)texW / texH;
         SDL_Rect srcRect;
         
@@ -343,8 +421,9 @@ void GameWindow::render(float dt, float turnProgress, AppState state, Match* mat
             srcRect.y = (texH - srcRect.h) / 2;
         }
 
-        // Fills the scaled screen perfectly on both Desktop and Mobile
-        SDL_Rect destRect = {0, -kbOffsetY, virtualW, virtualH};
+        // THE FIX: DestRect is {0, 0, w, h}. 
+        // It no longer slides up with -kbOffsetY, meaning no black static at the bottom!
+        SDL_Rect destRect = {0, 0, w, h};
         SDL_RenderCopy(renderer, tableBackground, &srcRect, &destRect);
     } else {
         SDL_SetRenderDrawColor(renderer, 35, 107, 43, 255); 
@@ -352,14 +431,13 @@ void GameWindow::render(float dt, float turnProgress, AppState state, Match* mat
     }
 
     // --- 2. SET SAFE ZONE VIEWPORT FOR UI ---
-    // THE FIX: Do NOT multiply safeX or safeY by scale here. SDL handles it internally now!
-    SDL_Rect safeZone = { safeX, safeY - kbOffsetY, LOGICAL_WIDTH, LOGICAL_HEIGHT };
+    // The UI slides up smoothly OVER the pinned background
+    SDL_Rect safeZone = { viewX, viewY - kbOffsetY, viewW, viewH };
     SDL_RenderSetViewport(renderer, &safeZone);
+    SDL_RenderSetScale(renderer, scale, scale);
 
     activeButtons.clear(); 
     handHitboxes.clear();
-
-    // ... (Keep the rest of your UI render states exactly as they are) ...
 
     SDL_Color white = {255, 255, 255, 255};
     SDL_Color black = {0, 0, 0, 255};
@@ -367,23 +445,182 @@ void GameWindow::render(float dt, float turnProgress, AppState state, Match* mat
     SDL_Color blue = {50, 100, 200, 255};
     SDL_Color red = {200, 50, 50, 255};
 
-    // --- REMAINDER OF RENDER LOGIC REMAINS IDENTICAL ---
+    // --- GLOBAL UI SCALE FACTOR ---
+    float ui = 1.0f;
+#ifdef __ANDROID__
+    ui = 1.5f; // Visual buttons are 60% larger globally
+#endif
+
     if (state == AppState::NAME_INPUT) {
-        renderText("WELCOME TO AGONIA", LOGICAL_WIDTH/2 - 190, LOGICAL_HEIGHT/2 - 150, white, false, 0, 1.5f);
-        renderText("Enter your player name:", LOGICAL_WIDTH/2 - 180, LOGICAL_HEIGHT/2 - 50, white);
+        // 1. Decorative UI Panel
+        int panelW = (int)(600 * ui);
+        int panelH = (int)(450 * ui);
+        SDL_Rect menuPanel = { LOGICAL_WIDTH / 2 - panelW / 2, LOGICAL_HEIGHT / 2 - panelH / 2, panelW, panelH };
+        drawPixelUIBox(menuPanel.x, menuPanel.y, menuPanel.w, menuPanel.h, {20, 30, 25, 230}, false);
+
+        // 2. Decorative Ace of Spades
+        int cardW = 126, cardH = 180;
+        renderCard(Card("A", "Spades"), LOGICAL_WIDTH/2 - cardW/2, menuPanel.y - cardH/2 - 20, cardW, cardH);
+
+        // 3. Golden Title Text
+        renderText("PLAYER PROFILE", LOGICAL_WIDTH/2 - 160, menuPanel.y + 100, {255, 215, 0, 255}, true, 320, 1.2f);
+        renderText("Enter your name:", LOGICAL_WIDTH/2 - 120, menuPanel.y + 180, {200, 200, 200, 255}, true, 240, 0.8f);
         
-        SDL_Rect inputBox = {LOGICAL_WIDTH/2 - 200, LOGICAL_HEIGHT/2, 400, 60};
-        drawPixelUIBox(inputBox.x, inputBox.y, inputBox.w, inputBox.h, {200, 200, 200, 255}, false);
-        renderText(currentTextInput + "_", LOGICAL_WIDTH/2 - 180, LOGICAL_HEIGHT/2 + 10, black);
-    } 
+        // 4. The Text Box
+        int bw = (int)(400 * ui), bh = (int)(70 * ui);
+        SDL_Rect inputBox = {LOGICAL_WIDTH/2 - bw/2, menuPanel.y + 240, bw, bh};
+        
+        // Highlight box when typing
+        SDL_Color boxColor = isTextBoxFocused ? SDL_Color{255, 255, 255, 255} : SDL_Color{200, 200, 200, 255};
+        drawPixelUIBox(inputBox.x, inputBox.y, inputBox.w, inputBox.h, boxColor, false);
+        
+        // Blinking Cursor logic
+        std::string dispText = currentTextInput;
+        if (isTextBoxFocused && (SDL_GetTicks() / 500) % 2 == 0) dispText += "|";
+        else dispText += " ";
+        
+        renderText(dispText, inputBox.x + 20, inputBox.y + 15 + (isTextBoxFocused ? 0 : 2), black);
+
+        // 5. Submit Button (Mobile Lifesaver!)
+        activeButtons.push_back({ {LOGICAL_WIDTH/2 - bw/2, inputBox.y + bh + 30, bw, bh}, "Continue", blue, [this]() {
+            if (currentTextInput.length() > 0 && onNameEntered) {
+                isTextBoxFocused = false;
+                SDL_StopTextInput();
+                SDL_SetWindowTitle(window, ("Agonia user:" + currentTextInput).c_str());
+                onNameEntered(currentTextInput);
+                currentTextInput = "";
+            }
+        }});
+    }
     else if (state == AppState::MAIN_MENU) {
-        renderText("ONLINE MENU", LOGICAL_WIDTH/2 - 120, LOGICAL_HEIGHT/2 - 200, white);
-        activeButtons.push_back({ {LOGICAL_WIDTH/2 - 200, LOGICAL_HEIGHT/2 - 100, 400, 60}, "1. Create Public Lobby", darkGray, [this]() { if(onMenuOptionSelected) onMenuOptionSelected(1); } });
-        activeButtons.push_back({ {LOGICAL_WIDTH/2 - 200, LOGICAL_HEIGHT/2 - 20, 400, 60}, "2. Create Private Lobby", darkGray, [this]() { if(onMenuOptionSelected) onMenuOptionSelected(2); } });
-        activeButtons.push_back({ {LOGICAL_WIDTH/2 - 200, LOGICAL_HEIGHT/2 + 60, 400, 60}, "3. Join Lobby by Code", darkGray, [this]() { if(onMenuOptionSelected) onMenuOptionSelected(3); } });
-        activeButtons.push_back({ {LOGICAL_WIDTH/2 - 200, LOGICAL_HEIGHT/2 + 140, 400, 60}, "4. Find Public Games", darkGray, [this]() { if(onMenuOptionSelected) onMenuOptionSelected(4); } });
+        // 1. Decorative UI Panel (A dark translucent box for the menu)
+        int panelW = (int)(600 * ui);
+        int panelH = (int)(550 * ui);
+        SDL_Rect menuPanel = { LOGICAL_WIDTH / 2 - panelW / 2, LOGICAL_HEIGHT / 2 - panelH / 2, panelW, panelH };
+        drawPixelUIBox(menuPanel.x, menuPanel.y, menuPanel.w, menuPanel.h, {20, 30, 25, 230}, false);
+
+        // 2. Decorative Cards behind the title
+        int cardW = 126, cardH = 180;
+        // Left Card (Grayed out, pushed back)
+        renderCard(Card("J", "Spades"), LOGICAL_WIDTH/2 - cardW - 30, menuPanel.y - cardH/2 + 20, cardW, cardH, false, false, true); 
+        // Right Card (Grayed out, pushed back)
+        renderCard(Card("Q", "Hearts"), LOGICAL_WIDTH/2 + 30, menuPanel.y - cardH/2 + 20, cardW, cardH, false, false, true);
+        // Center Card (Bright, pushed up)
+        renderCard(Card("K", "Diamonds"), LOGICAL_WIDTH/2 - cardW/2, menuPanel.y - cardH/2 - 10, cardW, cardH); 
+
+        // 3. Golden Title Text
+        renderText("AGONIA", LOGICAL_WIDTH/2 - 120, menuPanel.y + 100, {255, 215, 0, 255}, true, 240, 1.5f); 
+        renderText("MULTIPLAYER", LOGICAL_WIDTH/2 - 100, menuPanel.y + 160, {200, 200, 200, 255}, true, 200, 0.8f);
+
+        // 4. Color-Coded Buttons (Bigger, friendlier)
+        int bw = (int)(400 * ui), bh = (int)(60 * ui), gap = (int)(75 * ui);
+        int startY = menuPanel.y + 220;
+
+        activeButtons.push_back({ {LOGICAL_WIDTH/2 - bw/2, startY, bw, bh}, "Create Public Game", blue, [this]() { if(onMenuOptionSelected) onMenuOptionSelected(1); } });
+        activeButtons.push_back({ {LOGICAL_WIDTH/2 - bw/2, startY + gap, bw, bh}, "Create Private Game", {180, 50, 50, 255}, [this]() { if(onMenuOptionSelected) onMenuOptionSelected(2); } });
+        activeButtons.push_back({ {LOGICAL_WIDTH/2 - bw/2, startY + gap*2, bw, bh}, "Find Public Games", {50, 150, 50, 255}, [this]() { if(onMenuOptionSelected) onMenuOptionSelected(4); } });
+        activeButtons.push_back({ {LOGICAL_WIDTH/2 - bw/2, startY + gap*3, bw, bh}, "Join by Code", darkGray, [this]() { if(onMenuOptionSelected) onMenuOptionSelected(3); } });
+    // Add the "?" Rules Button anchored to the top right of the panel!
+        int qSize = (int)(60 * ui);
+        activeButtons.push_back({ {menuPanel.x + 10, menuPanel.y + 10, (int)(120 * ui), qSize}, isMuted ? "Unmute" : "Mute", darkGray, [this]() { isMuted = !isMuted; } });
+        activeButtons.push_back({ {menuPanel.x + menuPanel.w - qSize - 10, menuPanel.y + 10, qSize, qSize}, "?", darkGray, [this]() { if(onMenuOptionSelected) onMenuOptionSelected(5); } });
+    }
+    else if (state == AppState::RULES) {
+        // 1. Static Glass Panel
+        int panelW = 1600;
+        int panelH = 950;
+        SDL_Rect rulesPanel = { LOGICAL_WIDTH / 2 - panelW / 2, LOGICAL_HEIGHT / 2 - panelH / 2, panelW, panelH };
+        drawPixelUIBox(rulesPanel.x, rulesPanel.y, rulesPanel.w, rulesPanel.h, {20, 30, 25, 245}, false);
+
+        // 2. Static Header & Footer Elements
+        renderText("HOW TO PLAY AGONIA", rulesPanel.x, rulesPanel.y + 40, {255, 215, 0, 255}, true, panelW, 1.5f);
+
+        int btnW = (int)(300 * ui), btnH = (int)(70 * ui);
+        activeButtons.push_back({ 
+            {LOGICAL_WIDTH/2 - btnW/2, rulesPanel.y + panelH - btnH - 30, btnW, btnH}, 
+            "Back to Menu", 
+            darkGray, 
+            std::function<void()>([this]() { 
+                if(onMenuOptionSelected) onMenuOptionSelected(-1); 
+                rulesScrollY = 0.0f; // Reset scroll when leaving!
+            }) 
+        });
+
+        // 3. HARDWARE CLIPPING (The Scroll Window)
+        // THE FIX: Push clipY down to 150 to clear the title, and let SDL handle the scaling automatically!
+        int clipY = rulesPanel.y + 150;
+        int clipH = panelH - 150 - btnH - 40; 
+        
+        SDL_Rect logicalClip = { rulesPanel.x + 20, clipY, panelW - 40, clipH };
+        SDL_RenderSetClipRect(renderer, &logicalClip);
+
+        // --- SCROLLABLE CONTENT BELOW ---
+        int leftX = rulesPanel.x + 80;
+        int startY = clipY + 20 + (int)rulesScrollY; // All Y coordinates shift by rulesScrollY!
+
+        // Objective
+        renderText("OBJECTIVE:", leftX, startY, {100, 200, 255, 255}, false, 0, 1.2f);
+        renderText("Be the first player to discard all your cards.", leftX, startY + 60, white, false, 0, 0.9f);
+        renderText("You must match the Top Card's SUIT or VALUE.", leftX, startY + 100, white, false, 0, 0.9f);
+        
+        // Drawing & Passing
+        startY += 180;
+        renderText("DRAWING & PASSING:", leftX, startY, {100, 200, 255, 255}, false, 0, 1.2f);
+        renderText("- If you cannot play, you MUST tap the deck to DRAW.", leftX, startY + 60, white, false, 0, 0.9f);
+        renderText("- You can only draw ONCE per turn.", leftX, startY + 100, {255, 215, 0, 255}, false, 0, 0.9f);
+        renderText("- If you still cannot play after drawing, tap PASS to end your turn.", leftX, startY + 140, white, false, 0, 0.9f);
+
+        // Special Cards
+        startY += 220;
+        renderText("SPECIAL CARDS:", leftX, startY, {100, 200, 255, 255}, false, 0, 1.2f);
+
+        int cardW = 70;
+        int cardH = 100;
+        int textOffsetX = cardW + 30;
+        int rowSpacing = cardH + 30;
+        startY += 70;
+
+        renderCard(Card("A", "Spades"), leftX, startY, cardW, cardH);
+        renderText("ACE: Change active suit. Playable on anything.", leftX + textOffsetX, startY + (cardH/2) - 20, white, false, 0, 0.9f);
+        startY += rowSpacing;
+
+        renderCard(Card("7", "Hearts"), leftX, startY, cardW, cardH);
+        renderText("SEVEN: Next player draws 2 cards (Stacks!).", leftX + textOffsetX, startY + (cardH/2) - 20, white, false, 0, 0.9f);
+        startY += rowSpacing;
+
+        renderCard(Card("8", "Diamonds"), leftX, startY, cardW, cardH);
+        renderText("EIGHT: Play another card immediately.", leftX + textOffsetX, startY + (cardH/2) - 20, white, false, 0, 0.9f);
+        startY += rowSpacing;
+
+        renderCard(Card("9", "Clubs"), leftX, startY, cardW, cardH);
+        renderText("NINE: Skips the next player's turn.", leftX + textOffsetX, startY + (cardH/2) - 20, white, false, 0, 0.9f);
+        startY += rowSpacing;
+
+        // Ending Constraints
+        renderText("IMPORTANT CONSTRAINTS:", leftX, startY, {255, 100, 100, 255}, false, 0, 1.2f);
+        renderText("- You CANNOT win the round by playing a special card as your last card.", leftX, startY + 60, white, false, 0, 0.9f);
+        renderText("  (If you do, you will be penalized and forced to draw!)", leftX, startY + 100, {200, 200, 200, 255}, false, 0, 0.8f);
+
+        // Points
+        startY += 180;
+        renderText("POINTS SYSTEM:", leftX, startY, {100, 200, 255, 255}, false, 0, 1.2f);
+        renderText("When a round ends, cards left in your hand add to your penalty score:", leftX, startY + 60, white, false, 0, 0.9f);
+        renderText("- Number Cards (2-6, 10) = Face Value", leftX, startY + 100, white, false, 0, 0.9f);
+        renderText("- Face Cards (J, Q, K) = 10 Points", leftX, startY + 140, white, false, 0, 0.9f);
+        renderText("- Special Cards (7, 8, 9) = 10 Points", leftX, startY + 180, white, false, 0, 0.9f);
+        renderText("- Aces = 11 Points", leftX, startY + 220, white, false, 0, 0.9f);
+        renderText("If you reach the Target Score, you lose the tournament!", leftX, startY + 280, {255, 215, 0, 255}, false, 0, 0.9f);
+
+        // 4. Update the Max Scroll Bounds dynamically based on the final text position
+        int totalContentHeight = (startY + 350) - (clipY + 20 + (int)rulesScrollY);
+        rulesMaxScroll = (float)(totalContentHeight - clipH);
+        if (rulesMaxScroll < 0) rulesMaxScroll = 0;
+
+        // 5. DISABLE CLIPPING so the rest of the game UI draws correctly!
+        SDL_RenderSetClipRect(renderer, NULL);
     }
     else if (state == AppState::FIND_LOBBY) {
+        int bw = (int)(500 * ui), bh = (int)(60 * ui), gap = (int)(80 * ui);
         renderText("PUBLIC LOBBIES", LOGICAL_WIDTH/2 - 150, 100, white);
         
         if (publicLobbies.empty()) {
@@ -393,99 +630,228 @@ void GameWindow::render(float dt, float turnProgress, AppState state, Match* mat
             for (const auto& lob : publicLobbies) {
                 std::string btnText = "Join " + lob.hostName + " (" + std::to_string(lob.playerCount) + "/4)";
                 std::string joinCode = lob.code;
-                activeButtons.push_back({ {LOGICAL_WIDTH/2 - 250, yOff, 500, 60}, btnText, blue, [this, joinCode]() { 
+                activeButtons.push_back({ {LOGICAL_WIDTH/2 - bw/2, yOff, bw, bh}, btnText, blue, [this, joinCode]() { 
                     if(onJoinCodeEntered) onJoinCodeEntered(joinCode); 
                 }});
-                yOff += 80;
+                yOff += gap;
             }
         }
-        activeButtons.push_back({ {LOGICAL_WIDTH/2 - 100, LOGICAL_HEIGHT - 150, 200, 60}, "Back", darkGray, [this]() { if(onMenuOptionSelected) onMenuOptionSelected(-1); } });
+        int backW = (int)(200 * ui);
+        activeButtons.push_back({ {LOGICAL_WIDTH/2 - backW/2, LOGICAL_HEIGHT - (int)(150 * ui), backW, bh}, "Back", darkGray, [this]() { if(onMenuOptionSelected) onMenuOptionSelected(-1); } });
     }
     else if (state == AppState::JOIN_INPUT) {
-        renderText("Enter 4-Character Code:", LOGICAL_WIDTH/2 - 190, LOGICAL_HEIGHT/2 - 50, white);
-        SDL_Rect inputBox = {LOGICAL_WIDTH/2 - 100, LOGICAL_HEIGHT/2, 200, 60};
-        drawPixelUIBox(inputBox.x, inputBox.y, inputBox.w, inputBox.h, {200, 200, 200, 255}, false);
-        renderText(currentTextInput + "_", LOGICAL_WIDTH/2 - 80, LOGICAL_HEIGHT/2 + 10, black);
+        int bw = (int)(200 * ui), bh = (int)(60 * ui);
         
-        activeButtons.push_back({ {LOGICAL_WIDTH/2 - 100, LOGICAL_HEIGHT/2 + 150, 200, 60}, "Back", darkGray, [this]() { if(onMenuOptionSelected) onMenuOptionSelected(-1); } });
+        SDL_Color textWhite = {255, 255, 255, 255};
+        SDL_Color textBlack = {0, 0, 0, 255};
+        SDL_Color btnGray = {100, 100, 100, 255};
+        SDL_Color btnBlue = {50, 100, 200, 255}; 
+        SDL_Color errorRed = {255, 50, 50, 255};
+
+        renderText("Enter 4-Character Code:", LOGICAL_WIDTH/2 - 190, LOGICAL_HEIGHT/2 - 50, textWhite);
+        SDL_Rect inputBox = {LOGICAL_WIDTH/2 - bw/2, LOGICAL_HEIGHT/2, bw, bh};
+        
+        SDL_Color boxColor = isTextBoxFocused ? SDL_Color{255, 255, 255, 255} : SDL_Color{200, 200, 200, 255};
+        drawPixelUIBox(inputBox.x, inputBox.y, inputBox.w, inputBox.h, boxColor, false);
+        
+        std::string dispText = currentTextInput;
+        if (isTextBoxFocused && (SDL_GetTicks() / 500) % 2 == 0) dispText += "|";
+        else dispText += " ";
+        
+        renderText(dispText, inputBox.x + 20, inputBox.y + 15 + (isTextBoxFocused ? 0 : 2), textBlack);
+        
+        if (!joinErrorMessage.empty()) {
+            renderText(joinErrorMessage, LOGICAL_WIDTH/2 - 150, inputBox.y + bh + 20, errorRed, true, 300, 0.8f);
+        }
+        
+        int joinW = (int)(250 * ui);
+        activeButtons.push_back({ 
+            {LOGICAL_WIDTH/2 - joinW/2, inputBox.y + bh + (int)(50 * ui), joinW, bh}, 
+            "Join Game", 
+            btnBlue, 
+            std::function<void()>([this]() { 
+                if(currentTextInput.length() == 4 && onJoinCodeEntered) {
+                    isTextBoxFocused = false;
+                    SDL_StopTextInput();
+                    onJoinCodeEntered(currentTextInput);
+                }
+            }) 
+        });
+
+        int backW = (int)(200 * ui);
+        activeButtons.push_back({ 
+            {LOGICAL_WIDTH/2 - backW/2, LOGICAL_HEIGHT/2 + (int)(200 * ui), backW, bh}, 
+            "Back", 
+            btnGray, 
+            std::function<void()>([this]() { 
+                if(onMenuOptionSelected) onMenuOptionSelected(-1); 
+            }) 
+        });
     }
     else if (state == AppState::LOBBY) {
         bool isHost = (myName == hostName); 
-        renderText("--- LOBBY [" + lobbyCode + "] ---", LOGICAL_WIDTH/2 - 180, 100, white);
-        
-        int yOffset = 200;
-        for (const auto& p : lobbyPlayers) {
-            std::string label = "- " + p.name;
-            if (p.name == hostName) label += "<host>"; 
-            if (p.isBot) label += " (BOT)";
-            
-            renderText(label, LOGICAL_WIDTH/2 - 150, yOffset, white);
-            
-            if (isHost && p.name != hostName) {
-                std::string target = p.name;
-                activeButtons.push_back({ {LOGICAL_WIDTH/2 + 200, yOffset - 5, 80, 40}, "Kick", red, [this, target]() { 
-                    if(onKickPlayerClicked) onKickPlayerClicked(target); 
-                }});
-            }
-            yOffset += 50;
+
+        // 1. Main Lobby Panel
+        int panelW = (int)(700 * ui);
+        int panelH = (int)(550 * ui);
+        SDL_Rect lobbyPanel = { LOGICAL_WIDTH / 2 - panelW / 2, LOGICAL_HEIGHT / 2 - panelH / 2 - (int)(30 * ui), panelW, panelH };
+        drawPixelUIBox(lobbyPanel.x, lobbyPanel.y, lobbyPanel.w, lobbyPanel.h, {20, 30, 25, 230}, false);
+
+        // 2. Lobby Header
+        renderText("LOBBY CODE: " + lobbyCode, lobbyPanel.x, lobbyPanel.y + (int)(30 * ui), {255, 215, 0, 255}, true, lobbyPanel.w, 1.2f);
+        if (!isHost) {
+            renderText("Target Score: " + std::to_string(targetScore), lobbyPanel.x, lobbyPanel.y + (int)(80 * ui), {200, 200, 200, 255}, true, lobbyPanel.w, 0.8f);
         }
 
+        // 3. The 4 Player Slots
+        int slotW = panelW - (int)(60 * ui);
+        int slotH = (int)(70 * ui);
+        int startX = lobbyPanel.x + (int)(30 * ui);
+        int startY = lobbyPanel.y + (int)(130 * ui);
+
+        for (int i = 0; i < 4; ++i) {
+            int currentY = startY + (i * (slotH + (int)(15 * ui)));
+            SDL_Rect slotRect = { startX, currentY, slotW, slotH };
+
+            if (i < lobbyPlayers.size()) {
+                // Occupied Slot
+                drawPixelUIBox(slotRect.x, slotRect.y, slotRect.w, slotRect.h, {40, 60, 50, 255}, false);
+                
+                std::string name = lobbyPlayers[i].name;
+                SDL_Color nameColor = white;
+                std::string tag = "";
+                
+                if (name == hostName) { 
+                    nameColor = {255, 215, 0, 255}; // Gold for host
+                    tag = " (HOST)"; 
+                } else if (lobbyPlayers[i].isBot) { 
+                    tag = " (BOT)"; 
+                }
+
+                // Center text vertically in the slot
+                renderText(name + tag, slotRect.x + (int)(20 * ui), slotRect.y + (slotRect.h / 2) - 15, nameColor);
+
+                // Kick Button (Anchored to the right side of the slot)
+                if (isHost && name != hostName) {
+                    int kickW = (int)(120 * ui);
+                    int kickH = (int)(50 * ui);
+                    activeButtons.push_back({ {slotRect.x + slotRect.w - kickW - (int)(10 * ui), slotRect.y + (slotRect.h - kickH) / 2, kickW, kickH}, "Kick", red, [this, name]() { 
+                        if(onKickPlayerClicked) onKickPlayerClicked(name); 
+                    }});
+                }
+            } else {
+                // Empty Slot
+                drawPixelUIBox(slotRect.x, slotRect.y, slotRect.w, slotRect.h, {30, 30, 30, 150}, false);
+                renderText("Waiting for player...", slotRect.x + (int)(20 * ui), slotRect.y + (slotRect.h / 2) - 15, {120, 120, 120, 255});
+            }
+        }
+
+        // 4. Action Buttons (Underneath the panel)
+        int btnW = (int)(220 * ui), btnH = (int)(70 * ui);
+        int actionY = lobbyPanel.y + panelH + (int)(30 * ui);
+
         if (isHost) {
-            activeButtons.push_back({ {LOGICAL_WIDTH/2 - 330, LOGICAL_HEIGHT - 200, 200, 60}, "Target: " + std::to_string(targetScore), darkGray, onToggleScoreClicked });
-            activeButtons.push_back({ {LOGICAL_WIDTH/2 - 100, LOGICAL_HEIGHT - 200, 200, 60}, "Fill Bots", darkGray, onFillBotsClicked });
-            activeButtons.push_back({ {LOGICAL_WIDTH/2 + 130, LOGICAL_HEIGHT - 200, 200, 60}, "Start Game", blue, onStartGameClicked });
+            int gap = btnW + (int)(20 * ui);
+            int btnStartX = LOGICAL_WIDTH/2 - (gap * 1) + (gap/2); 
+            
+            activeButtons.push_back({ {btnStartX - gap, actionY, btnW, btnH}, "Target: " + std::to_string(targetScore), darkGray, onToggleScoreClicked });
+            activeButtons.push_back({ {btnStartX, actionY, btnW, btnH}, "Fill Bots", darkGray, onFillBotsClicked });
+            
+            // THE FIX: Lock the Start Button unless there are exactly 2 or 4 players
+            int pCount = lobbyPlayers.size();
+            bool canStart = (pCount == 2 || pCount == 4);
+            SDL_Color startColor = canStart ? blue : SDL_Color{100, 100, 100, 255}; // Gray out if locked
+            
+            activeButtons.push_back({ {btnStartX + gap, actionY, btnW, btnH}, "Start Game", startColor, [this, canStart]() {
+                if (canStart && onStartGameClicked) onStartGameClicked();
+            }});
         } else {
-            renderText("Target Score: " + std::to_string(targetScore), LOGICAL_WIDTH/2 - 120, LOGICAL_HEIGHT - 260, white);
-            renderText("Waiting for host to start...", LOGICAL_WIDTH/2 - 190, LOGICAL_HEIGHT - 200, white);
+            renderText("Waiting for host to start...", LOGICAL_WIDTH/2 - 190, actionY + 20, white);
         }
         
-        activeButtons.push_back({ {50, LOGICAL_HEIGHT - 120, 150, 60}, "Exit", darkGray, [this]() { if(onMenuOptionSelected) onMenuOptionSelected(-1); } });
+        // Exit Button (Top Left corner like a standard back button)
+        activeButtons.push_back({ {(int)(30 * ui), (int)(30 * ui), (int)(120 * ui), (int)(60 * ui)}, "Exit", darkGray, [this]() { if(onMenuOptionSelected) onMenuOptionSelected(-1); } });
     }
     else if (state == AppState::PLAYING && match) {
         bool isMyTurn = (match->getCurrentPlayerIndex() == myIndex);
+        
+        // --- DECOUPLED CARD SCALING ---
         int standardCardW = 126;
         int standardCardH = 180;
+        
+        int handCardW = 126;
+        int handCardH = 180;
+        int handSpacing = 80;
+        int handYOffset = 50; 
 
+#ifdef __ANDROID__
+        standardCardW = 168; 
+        standardCardH = 240; 
+        
+        handCardW = 240;   
+        handCardH = 342;
+        handSpacing = 140; 
+        handYOffset = -60; 
+#endif
+
+        // --- 1. TOP HUD (Game Info) ---
+        int hudW = (int)(400 * ui), hudH = (int)(60 * ui);
+        
+        // Center on Desktop, Anchor to Top-Left on Mobile
+        int hudX = LOGICAL_WIDTH / 2 - hudW / 2;
+#ifdef __ANDROID__
+        hudX = (int)(30 * ui); 
+#endif
+
+        SDL_Rect hudRect = { hudX, (int)(20 * ui), hudW, hudH };
+        drawPixelUIBox(hudRect.x, hudRect.y, hudRect.w, hudRect.h, {20, 30, 25, 230}, false);
+        
+        std::string currentPlayerName = "Unknown";
         if (match->getCurrentPlayerIndex() < match->getPlayers().size()) {
-            std::string currentPlayerName = match->getPlayers()[match->getCurrentPlayerIndex()].getName();
-            renderText("Current Turn: " + currentPlayerName, 50, 50, white);
+            currentPlayerName = match->getPlayers()[match->getCurrentPlayerIndex()].getName();
         }
+        std::string turnText = isMyTurn ? "YOUR TURN" : (currentPlayerName + "'s Turn");
+        SDL_Color turnColor = isMyTurn ? SDL_Color{50, 255, 50, 255} : white;
+        renderText(turnText, hudRect.x, hudRect.y + (int)(15 * ui), turnColor, true, hudW, 1.0f);
 
-        Card topCard = match->getTopCard();
-        renderCard(topCard, LOGICAL_WIDTH / 2 - standardCardW / 2, LOGICAL_HEIGHT / 2 - standardCardH / 2, standardCardW, standardCardH);
-
-        std::string suitText = match->getDeclaredSuit();
-        if (!suitText.empty()) renderText("ACTIVE SUIT: " + suitText, LOGICAL_WIDTH / 2 - 120, LOGICAL_HEIGHT / 2 + 120, white);
-
+        // --- 2. THE TABLE (Center) ---
+        int deckX = LOGICAL_WIDTH / 2 - standardCardW - 20;
+        int deckY = LOGICAL_HEIGHT / 2 - standardCardH / 2 - (int)(40 * ui);
+        int pileX = LOGICAL_WIDTH / 2 + 20;
+        
+        // Contextual Text hovering directly over the table cards!
         if (match->getCardsToDraw() > 0) {
-            renderText("PENALTY: Draw " + std::to_string(match->getCardsToDraw()), LOGICAL_WIDTH / 2 - 120, LOGICAL_HEIGHT / 2 - 180, red);
+            renderText("DRAW " + std::to_string(match->getCardsToDraw()), deckX, deckY - (int)(30 * ui)-40, {255, 50, 50, 255}, true, standardCardW, 0.9f);
+        }
+        std::string suitText = match->getDeclaredSuit();
+        if (!suitText.empty()) {
+            renderText("SUIT: " + suitText, pileX, deckY - (int)(30 * ui)-40, {255, 215, 0, 255}, true, standardCardW, 0.9f);
         }
 
-        activeButtons.push_back({ {LOGICAL_WIDTH/2 - 250, LOGICAL_HEIGHT/2 - standardCardH/2, standardCardW, standardCardH}, "DECK", {100, 20, 20, 255}, onDrawClicked });
-        activeButtons.push_back({ {LOGICAL_WIDTH/2 + 150, LOGICAL_HEIGHT/2 - 30, 120, 60}, "PASS", darkGray, onPassClicked });
-        activeButtons.push_back({ {LOGICAL_WIDTH - 160, LOGICAL_HEIGHT - 100, 150, 60}, sortBySuit ? "Sort: Suit" : "Sort: Value", darkGray, onSortClicked });
+        // Draw the Physical Deck (Stacked cards)
+        for(int i = 0; i < 4; ++i) { 
+            renderCardBack(deckX - (i*4), deckY - (i*4), standardCardW, standardCardH, false);
+        }
+        
+        // Draw the Discard Pile
+        Card topCard = match->getTopCard();
+        renderCard(topCard, pileX, deckY, standardCardW, standardCardH);
 
-        if (myIndex >= 0 && myIndex < match->getPlayers().size()) {
-            const auto& hand = match->getPlayers()[myIndex].getHand();
+        // ONLY render/activate gameplay buttons if we aren't picking an Ace suit
+        if (!needsSuitSelection) {
+            int btnW = (int)(160 * ui), btnH = (int)(60 * ui);
+            int btnY = deckY + standardCardH + (int)(30 * ui);
             
-            int maxHandWidth = LOGICAL_WIDTH - 200; 
-            int normalSpacing = 80;
-            int totalSpacingNeeded = hand.size() * normalSpacing;
-            int spacing = (totalSpacingNeeded > maxHandWidth) ? (maxHandWidth / (int)hand.size()) : normalSpacing;
-            
-            int startX = (LOGICAL_WIDTH - (hand.size() * spacing)) / 2;
-            int baseY = LOGICAL_HEIGHT - standardCardH - 50;
+            activeButtons.push_back({ {deckX + (standardCardW/2) - (btnW/2) - 6, btnY, btnW, btnH}, "DRAW", blue, onDrawClicked });
+            activeButtons.push_back({ {pileX + (standardCardW/2) - (btnW/2), btnY, btnW, btnH}, "PASS", darkGray, onPassClicked });
 
-            for (size_t i = 0; i < hand.size(); ++i) {
-                int drawY = baseY;
-                bool isSelected = (i == selectedCardIndex);
-                if (isSelected && isMyTurn) drawY -= 30; 
-
-                renderCard(hand[i], startX + (int)(i * spacing), drawY, standardCardW, standardCardH, false, isSelected, !isMyTurn);
-                handHitboxes.push_back({ startX + (int)(i * spacing), drawY, standardCardW, standardCardH });
-            }
+            int sortW = (int)(180 * ui), sortH = (int)(60 * ui);
+            int muteW = (int)(120 * ui), muteH = (int)(60 * ui);
+            activeButtons.push_back({ {LOGICAL_WIDTH - muteW - 30, (int)(20 * ui), muteW, muteH}, isMuted ? "Unmute" : "Mute", darkGray, [this]() { isMuted = !isMuted; } });
+            activeButtons.push_back({ {LOGICAL_WIDTH - sortW - 30, LOGICAL_HEIGHT - sortH - 30, sortW, sortH}, sortBySuit ? "Sort: Suit" : "Sort: Value", darkGray, onSortClicked });
         }
 
+        // --- 3. OPPONENTS (Cards and Nameplates) ---
         int numPlayers = match->getPlayers().size();
         for (int i = 0; i < numPlayers; ++i) {
             if (i == myIndex) continue;
@@ -493,28 +859,39 @@ void GameWindow::render(float dt, float turnProgress, AppState state, Match* mat
             int relativePos = (i - myIndex + numPlayers) % numPlayers;
             int cardCount = match->getPlayers()[i].getHand().size();
             
-            int oppCardW = 100, oppCardH = 150; 
-            int spacing = 30; 
+            int oppCardW = (int)(70 * ui), oppCardH = (int)(105 * ui); 
+            int spacing = (int)(25 * ui); 
 
             bool isTop = (numPlayers == 2 && relativePos == 1) || (numPlayers == 4 && relativePos == 2);
             bool isLeft = (numPlayers >= 3 && relativePos == 1);
             bool isRight = (numPlayers == 3 && relativePos == 2) || (numPlayers == 4 && relativePos == 3);
 
+            int nameW = (int)(200 * ui), nameH = (int)(40 * ui);
+            std::string nameLabel = match->getPlayers()[i].getName() + " (" + std::to_string(cardCount) + ")";
+
             if (isTop) {
+                // THE FIX: Push down on Desktop to clear the centered HUD, 
+                // but move way up on Mobile to reclaim the empty center space!
+                int startY = (int)(130 * ui); 
+#ifdef __ANDROID__
+                startY = (int)(60 * ui); 
+#endif
                 int totalWidth = (cardCount > 0) ? ((cardCount - 1) * spacing + oppCardW) : 0;
                 int startX = (LOGICAL_WIDTH - totalWidth) / 2;
                 for (int c = 0; c < cardCount; ++c) {
-                    renderCardBack(startX + (c * spacing), 50, oppCardW, oppCardH, false);
+                    renderCardBack(startX + (c * spacing), startY, oppCardW, oppCardH, false);
                 }
-                renderText(match->getPlayers()[i].getName(), startX, 20, white);
-            } 
+                drawPixelUIBox(LOGICAL_WIDTH/2 - nameW/2, startY - nameH - 10, nameW, nameH, {30, 30, 30, 200}, false);
+                renderText(nameLabel, LOGICAL_WIDTH/2 - nameW/2, startY - nameH - 10 + (int)(5*ui), white, true, nameW, 0.8f);
+            }
             else if (isLeft) {
                 int totalHeight = (cardCount > 0) ? ((cardCount - 1) * spacing + oppCardW) : 0;
                 int startY = (LOGICAL_HEIGHT - totalHeight) / 2;
                 for (int c = 0; c < cardCount; ++c) {
                     renderCardBack(50, startY + (c * spacing), oppCardW, oppCardH, true); 
                 }
-                renderText(match->getPlayers()[i].getName(), 50, startY - 40, white);
+                drawPixelUIBox(20, startY - nameH - 10, nameW, nameH, {30, 30, 30, 200}, false);
+                renderText(nameLabel, 20, startY - nameH - 10 + (int)(5*ui), white, true, nameW, 0.8f);
             } 
             else if (isRight) {
                 int totalHeight = (cardCount > 0) ? ((cardCount - 1) * spacing + oppCardW) : 0;
@@ -522,18 +899,25 @@ void GameWindow::render(float dt, float turnProgress, AppState state, Match* mat
                 for (int c = 0; c < cardCount; ++c) {
                     renderCardBack(LOGICAL_WIDTH - oppCardH - 50, startY + (c * spacing), oppCardW, oppCardH, true);
                 }
-                renderText(match->getPlayers()[i].getName(), LOGICAL_WIDTH - oppCardH - 50, startY - 40, white);
+                drawPixelUIBox(LOGICAL_WIDTH - nameW - 20, startY - nameH - 10, nameW, nameH, {30, 30, 30, 200}, false);
+                renderText(nameLabel, LOGICAL_WIDTH - nameW - 20, startY - nameH - 10 + (int)(5*ui), white, true, nameW, 0.8f);
             }
         }
 
+        // --- 4. ANIMATIONS ---
         for (auto it = activeAnimations.begin(); it != activeAnimations.end(); ) {
-            it->progress += it->speed * dt;
+            // THE FIX: Lower the speed slightly so it takes ~0.4 seconds to complete
+            it->progress += 2.5f * dt; 
             
             if (it->progress >= 1.0f) {
                 it = activeAnimations.erase(it);
             } else {
-                float currentX = it->startX + (it->targetX - it->startX) * it->progress;
-                float currentY = it->startY + (it->targetY - it->startY) * it->progress;
+                // THE FIX: Cubic Ease-Out formula (Starts fast, smoothly decelerates)
+                float t = it->progress;
+                float ease = 1.0f - (1.0f - t) * (1.0f - t) * (1.0f - t); 
+                
+                float currentX = it->startX + (it->targetX - it->startX) * ease;
+                float currentY = it->startY + (it->targetY - it->startY) * ease;
                 
                 if (it->card.getSuit() == "Hidden") {
                     renderCardBack((int)currentX, (int)currentY, standardCardW, standardCardH, false);
@@ -544,49 +928,80 @@ void GameWindow::render(float dt, float turnProgress, AppState state, Match* mat
             }
         }
 
-        if (isMyTurn) {
-            int boxW = 300, boxH = 50; 
-            int boxX = (LOGICAL_WIDTH - boxW) / 2;
-            int boxY = LOGICAL_HEIGHT / 2 - 240; 
+        // --- 5. PLAYER'S HAND ---
+        if (myIndex >= 0 && myIndex < match->getPlayers().size()) {
+            const auto& hand = match->getPlayers()[myIndex].getHand();
             
-            Uint32 pulse = (SDL_GetTicks() / 800) % 2; 
-            SDL_Color boxColor = pulse ? SDL_Color{60, 120, 210, 255} : SDL_Color{40, 90, 170, 255}; 
-            drawPixelUIBox(boxX, boxY, boxW, boxH, boxColor, false);
-            renderText("YOUR TURN", boxX, boxY + 8, white, true, boxW, 1.0f);
-        } else {
-            std::string turnText = "Waiting for Player " + std::to_string(match->getCurrentPlayerIndex()) + "...";
-            renderText(turnText, LOGICAL_WIDTH / 2 - 150, LOGICAL_HEIGHT / 2 - 220, white); 
+            int maxHandWidth = LOGICAL_WIDTH - 100; 
+            int totalSpacingNeeded = hand.size() * handSpacing;
+            int spacing = (totalSpacingNeeded > maxHandWidth) ? (maxHandWidth / (int)hand.size()) : handSpacing;
+            
+            int startX = (LOGICAL_WIDTH - (hand.size() * spacing)) / 2;
+            int baseY = LOGICAL_HEIGHT - handCardH - handYOffset;
+
+            for (size_t i = 0; i < hand.size(); ++i) {
+                int drawY = baseY;
+                bool isSelected = (i == selectedCardIndex);
+                if (isSelected && isMyTurn) drawY -= 50; 
+
+                renderCard(hand[i], startX + (int)(i * spacing), drawY, handCardW, handCardH, false, isSelected, !isMyTurn);
+                handHitboxes.push_back({ startX + (int)(i * spacing), drawY, handCardW, handCardH });
+            }
+            
+            // --- 6. TIMER BAR ---
+            if (isMyTurn) {
+                int timerW = (int)(600 * ui);
+                int timerH = (int)(12 * ui);
+                int timerX = LOGICAL_WIDTH / 2 - timerW / 2;
+                int timerY = baseY - timerH - (int)(30 * ui);
+
+                drawPixelUIBox(timerX, timerY, timerW, timerH, {0, 0, 0, 200}, false);
+                
+                int currentWidth = (int)((timerW - 8) * turnProgress);
+                if (currentWidth < 0) currentWidth = 0;
+                SDL_Rect timerFill = { timerX + 4, timerY + 4, currentWidth, timerH - 8 }; 
+                
+                SDL_Color timerColor = {50, 255, 50, 255}; 
+                if (turnProgress < 0.4f) timerColor = {255, 200, 50, 255}; 
+                if (turnProgress < 0.15f) timerColor = {255, 50, 50, 255}; 
+
+                SDL_SetRenderDrawColor(renderer, timerColor.r, timerColor.g, timerColor.b, timerColor.a);
+                SDL_RenderFillRect(renderer, &timerFill);
+            }
         }
 
+        // --- 7. SUIT SELECTION (Overlay) ---
         if (needsSuitSelection) {
-            SDL_Rect overlay = {0, 0, LOGICAL_WIDTH, LOGICAL_HEIGHT};
+            SDL_RenderSetViewport(renderer, NULL);
+            SDL_RenderSetScale(renderer, 1.0f, 1.0f);
+            
+            SDL_Rect overlay = {0, -kbOffsetY, w, h};
             SDL_SetRenderDrawColor(renderer, 0, 0, 0, 200);
             SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_BLEND);
             SDL_RenderFillRect(renderer, &overlay);
             SDL_SetRenderDrawBlendMode(renderer, SDL_BLENDMODE_NONE);
 
-            renderText("CHOOSE A SUIT", LOGICAL_WIDTH/2 - 130, LOGICAL_HEIGHT/2 - 150, white);
+            SDL_Rect safeZone = { viewX, viewY - kbOffsetY, viewW, viewH };
+            SDL_RenderSetViewport(renderer, &safeZone);
+            SDL_RenderSetScale(renderer, scale, scale);
+
+            int titleW = (int)(400 * ui), titleH = (int)(80 * ui);
+            drawPixelUIBox(LOGICAL_WIDTH/2 - titleW/2, LOGICAL_HEIGHT/2 - (int)(180 * ui), titleW, titleH, {20, 30, 25, 255}, false);
+            renderText("CHOOSE A SUIT", LOGICAL_WIDTH/2 - titleW/2, LOGICAL_HEIGHT/2 - (int)(180 * ui) + (int)(20*ui), {255, 215, 0, 255}, true, titleW, 1.2f);
+            
             auto pickSuit = [this](std::string s) { needsSuitSelection = false; if(onSuitSelected) onSuitSelected(s); };
 
-            activeButtons.push_back({ {LOGICAL_WIDTH/2 - 220, LOGICAL_HEIGHT/2 - 50, 200, 80}, "Hearts", red, [=](){pickSuit("Hearts");} });
-            activeButtons.push_back({ {LOGICAL_WIDTH/2 + 20, LOGICAL_HEIGHT/2 - 50, 200, 80}, "Diamonds", red, [=](){pickSuit("Diamonds");} });
-            activeButtons.push_back({ {LOGICAL_WIDTH/2 - 220, LOGICAL_HEIGHT/2 + 50, 200, 80}, "Spades", darkGray, [=](){pickSuit("Spades");} });
-            activeButtons.push_back({ {LOGICAL_WIDTH/2 + 20, LOGICAL_HEIGHT/2 + 50, 200, 80}, "Clubs", darkGray, [=](){pickSuit("Clubs");} });
-        }
+            int selBtnW = (int)(200 * ui), selBtnH = (int)(80 * ui);
+            int xOffset = (int)(20 * ui);
 
-        if (isMyTurn) {
-            SDL_Rect timerBg = { LOGICAL_WIDTH / 2 - 150, LOGICAL_HEIGHT / 2 - 175, 300, 14 }; 
-            drawPixelUIBox(timerBg.x, timerBg.y, timerBg.w, timerBg.h, {0, 0, 0, 255}, false);
-            
-            int currentWidth = (int)(292 * turnProgress);
-            SDL_Rect timerFill = { LOGICAL_WIDTH / 2 - 146, LOGICAL_HEIGHT / 2 - 171, currentWidth, 6 }; 
-            
-            SDL_Color timerColor = {50, 255, 50, 255}; 
-            if (turnProgress < 0.4f) timerColor = {255, 200, 50, 255}; 
-            if (turnProgress < 0.15f) timerColor = {255, 50, 50, 255}; 
+            activeButtons.push_back({ {LOGICAL_WIDTH/2 - selBtnW - xOffset, LOGICAL_HEIGHT/2 - (int)(50 * ui), selBtnW, selBtnH}, "Hearts", red, [=](){pickSuit("Hearts");} });
+            activeButtons.push_back({ {LOGICAL_WIDTH/2 + xOffset, LOGICAL_HEIGHT/2 - (int)(50 * ui), selBtnW, selBtnH}, "Diamonds", red, [=](){pickSuit("Diamonds");} });
+            activeButtons.push_back({ {LOGICAL_WIDTH/2 - selBtnW - xOffset, LOGICAL_HEIGHT/2 + selBtnH - (int)(10 * ui), selBtnW, selBtnH}, "Spades", darkGray, [=](){pickSuit("Spades");} });
+            activeButtons.push_back({ {LOGICAL_WIDTH/2 + xOffset, LOGICAL_HEIGHT/2 + selBtnH - (int)(10 * ui), selBtnW, selBtnH}, "Clubs", darkGray, [=](){pickSuit("Clubs");} });
 
-            SDL_SetRenderDrawColor(renderer, timerColor.r, timerColor.g, timerColor.b, timerColor.a);
-            SDL_RenderFillRect(renderer, &timerFill);
+            // THE FIX: Added a Cancel Button!
+            int cancelW = (int)(200 * ui), cancelH = (int)(60 * ui);
+            activeButtons.push_back({ {LOGICAL_WIDTH/2 - cancelW/2, LOGICAL_HEIGHT/2 + (selBtnH * 2) + (int)(10 * ui), cancelW, cancelH}, "Cancel", {100, 100, 100, 255}, [this](){ needsSuitSelection = false; } });
         }
     }
     else if (state == AppState::GAME_OVER && match) {
@@ -696,7 +1111,10 @@ void GameWindow::renderButton(const UIButton& btn) {
     bool isHovered = SDL_PointInRect(&mousePt, &btn.rect);
     drawPixelUIBox(btn.rect.x, btn.rect.y, btn.rect.w, btn.rect.h, btn.bgColor, isHovered);
     int textOffset = isHovered ? 2 : 0;
-    renderText(btn.text, btn.rect.x + 15 + textOffset, btn.rect.y + 12 + textOffset, {255, 255, 255, 255});
+    
+    // THE FIX: Use the 'centered' flag to perfectly align the text 
+    // to the center of the newly widened mobile buttons!
+    renderText(btn.text, btn.rect.x + textOffset, btn.rect.y + 12 + textOffset, {255, 255, 255, 255}, true, btn.rect.w);
 }
 
 std::string GameWindow::getSuitSymbol(const std::string& suit) {
